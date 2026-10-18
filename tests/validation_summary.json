@@ -1,6 +1,6 @@
 {
   "scope": "synthetic_regression_only",
-  "tests": 10,
+  "tests": 13,
   "failures": 0,
   "errors": 0,
   "contains_paper_or_project_data": false,
