@@ -11,6 +11,7 @@ job 结构：
   "names": ["2020s", "2050s", "2080s"],         # 面板名，与框顺序一致；可省略
   "slot_labels": ["1月","2月", ... ],           # 组内槽位标签（如12个月）
   "equal_spacing": true,                       # 仅确认等距后使用；否则给slot_edges
+  "stroke_bars": false,                        # 仅原图确认加粗竖线为柱形时开启
   "tick_window": 18,                            # 刻度搜索外侧宽度，单位PDF pt
   "per_group": 3,                               # 旧调用兼容参数；现有槽位定位不使用
   "y_side": "left"                              # 刻度在哪侧：left(默认)/right
@@ -34,7 +35,7 @@ from calib import (collect_spans, numeric_spans, color_key, fit_axis,
 
 
 def extract_bars(page, color_map, frames=None, names=None, slot_labels=None,
-                 per_group=3, y_side='left', slot_edges=None, equal_spacing=False, tick_window=18):
+                 per_group=3, y_side='left', slot_edges=None, equal_spacing=False, tick_window=18, stroke_bars=False):
     if not np.isfinite(tick_window) or tick_window <= 0:
         raise ValueError('tick_window须为正且有限的PDF pt宽度')
     if y_side not in ('left','right'):
@@ -75,13 +76,26 @@ def extract_bars(page, color_map, frames=None, names=None, slot_labels=None,
         for g in page.get_drawings():
             fill = g.get('fill')
             r = g['rect']
-            if fill is None or not (1.5 < r.width < 8) or r.height < 0.03:
-                continue
-            series = match_color(fill, cmap)      # 坑库 #13
-            if not series:
-                continue
-            if x0 < r.x0 < x1 and y0 - 1 < r.y0 < y1 + 1:
-                bars.append(((r.x0+r.x1)/2, r.y0, r.y1, series))
+            if fill is not None and 1.5 < r.width < 8 and r.height >= 0.03:
+                series = match_color(fill,cmap)
+                if series and x0 < r.x0 < x1 and y0-1 < r.y0 < y1+1:
+                    bars.append(((r.x0+r.x1)/2,r.y0,r.y1,series))
+            elif stroke_bars and g['type']=='s':
+                width=g.get('width',0) or 0
+                series=match_color(g.get('color'),cmap)
+                if not series or max(g.get('lineCap',(0,0,0)))!=0:
+                    continue
+                for item in g['items']:
+                    if item[0]!='l':continue
+                    a,b=item[1],item[2]
+                    if abs(a.x-b.x)<0.01 and 1.5<width<8:
+                        cx=float(a.x);lo=float(min(a.y,b.y));hi=float(max(a.y,b.y))
+                    elif abs(a.y-b.y)<0.01 and 1.5<abs(a.x-b.x)<8 and width>=0.03:
+                        cx=float((a.x+b.x)/2);lo=float(a.y-width/2);hi=float(a.y+width/2)
+                    else:continue
+                    if (x0<cx<x1 and y0-1<=lo<=y1+1 and hi<=y1+1
+                        and min(abs(lo-base_pos),abs(hi-base_pos))<=1):
+                        bars.append((cx,lo,hi,series))
         bars.sort(key=lambda b: b[0])
 
         edges = (slot_edges.get(names[fi]) if isinstance(slot_edges, dict)
@@ -140,7 +154,7 @@ def main():
         page, cmap, frames=job.get('frames'), names=job.get('names'),
         slot_labels=job.get('slot_labels'), per_group=job.get('per_group', 3),
         y_side=job.get('y_side', 'left'), slot_edges=job.get('slot_edges'),
-        equal_spacing=job.get('equal_spacing', False), tick_window=job.get('tick_window',18))
+        equal_spacing=job.get('equal_spacing', False), tick_window=job.get('tick_window',18), stroke_bars=job.get('stroke_bars',False))
     prefix = job.get('prefix', f'p{job["page"]}_bars')
     from calib import record_envelope
     out['_evidence'] = record_envelope(job, [r for panel in out.values() for r in panel['records']],
