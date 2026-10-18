@@ -98,6 +98,47 @@ class Regression(unittest.TestCase):
         with self.assertRaises(ValueError):bars.extract_bars(**args,tick_window=0)
         doc.close()
 
+    def test_stroke_bars_and_compound_paths(self):
+        ds=[{'type':'s','color':(1,0,0),'fill':None,'width':3,'lineCap':(0,0,0),
+             'rect':fitz.Rect(20,30,70,100),
+             'items':[('l',fitz.Point(20,100),fitz.Point(20,30)),
+                      ('l',fitz.Point(70,100),fitz.Point(70,60))]}]
+        out,_,marks,_=self.extract(ds,equal_spacing=True,stroke_bars=True)
+        self.assertEqual(out['P1']['values']['A'],{'Jan':70,'Feb':40})
+        self.assertEqual(len(marks),2)
+        ds[0].update(width=40,items=[('l',fitz.Point(20,80),fitz.Point(24,80))])
+        out,_,_,_=self.extract(ds,equal_spacing=True,stroke_bars=True)
+        self.assertEqual(out['P1']['values']['A']['Jan'],40)
+        out,_,_,_=self.extract(ds,equal_spacing=True)
+        self.assertIsNone(out['P1']['values']['A']['Jan'])
+
+    def test_audit_blocks_coverage_and_identity_errors(self):
+        from audit_workbook import audit
+        self.make_checks()
+        path=OUT/'audit.json'
+        rules=[{'kind':'count','sheet':'Data','range':'F6:AJ6','expected':31,'source':'synthetic original 31-month axis'},
+               {'kind':'cell','sheet':'Data','cell':'F6','expected':-0.21,'source':'synthetic original sign'},
+               {'kind':'cell','sheet':'Data','cell':'C6','expected':'Variance','source':'synthetic original panel label'},
+               {'kind':'sequence','sheet':'Data','range':'F5:G5','expected':[.05,.15],'source':'synthetic CDF axis'}]
+        path.write_text(json.dumps({'rules':rules}))
+        result=audit(OUT/'book.xlsx',path)
+        self.assertEqual(len(result['failures']),4)
+        path.write_text('{"rules":[]}')
+        with self.assertRaises(ValueError):audit(OUT/'book.xlsx',path)
+
+    def test_audit_rejects_missing_as_zero(self):
+        from audit_workbook import audit
+        self.make_checks()
+        records=OUT/'evidence.json';contract=OUT/'audit.json'
+        records.write_text(json.dumps([{'sheet':'Data','cell':'G6','value':0,'status':'missing'}]))
+        contract.write_text(json.dumps({'rules':[{'kind':'source_records','json':'evidence.json','source':'synthetic source'}]}))
+        result=audit(OUT/'book.xlsx',contract)
+        self.assertTrue(result['failures'])
+        wb=openpyxl.load_workbook(OUT/'book.xlsx');wb['Data']['G6']=0;wb.save(OUT/'book.xlsx')
+        self.assertTrue(audit(OUT/'book.xlsx',contract)['failures'])
+        records.write_text(json.dumps([{'sheet':'Data','cell':'G6','value':0,'status':'near_zero_visual_review','method':'baseline_visually_near_zero'}]))
+        self.assertFalse(audit(OUT/'book.xlsx',contract)['failures'])
+
     def test_real_pdf_cli_evidence_and_overlay(self):
         doc=fitz.open();page=doc.new_page(width=400,height=220)
         page.draw_line((60,120),(140,80),color=(1,0,0))
