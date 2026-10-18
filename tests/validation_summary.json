@@ -1,0 +1,9 @@
+{
+  "scope": "synthetic_regression_only",
+  "tests": 10,
+  "failures": 0,
+  "errors": 0,
+  "contains_paper_or_project_data": false,
+  "run": "python tests/test_regressions.py",
+  "limitations": "Tests do not certify extraction accuracy on arbitrary papers."
+}

@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.pdf
+*.xlsx
+*_check.png
