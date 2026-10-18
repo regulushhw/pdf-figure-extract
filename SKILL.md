@@ -1,5 +1,6 @@
 ---
 name: pdf-figure-extract
+license: MIT
 description: 从论文PDF的图表提取带出处的数值，支持矢量柱图、直线段曲线与标记点，生成原图叠加检查图及Excel底稿。适用于论文图表数字化与数值摘录。
 ---
 
