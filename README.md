@@ -20,6 +20,7 @@
 python /path/to/tools/scan_pages.py paper.pdf --json scan.json
 python /path/to/tools/extract_bars.py job.json
 python /path/to/tools/verify.py workbook.xlsx checks.json
+python /path/to/tools/audit_workbook.py workbook.xlsx audit.json
 python /path/to/tests/test_regressions.py
 ```
 
@@ -27,9 +28,9 @@ python /path/to/tests/test_regressions.py
 
 ## 验证范围
 
-本次修正附10项合成回归样例，运行后生成JSON结果，用于检验空检查、覆盖缺失、多面板标记、路径丢失、标准矩形点标记及证据输出等行为。合成测试不是论文独立复核。
+本包附合成回归样例（数量及范围见 `tests/validation_summary.json`），运行后生成JSON结果，用于检验空检查、覆盖缺失、多面板标记、路径丢失、标准矩形点标记及证据输出等行为。合成测试不是论文独立复核。
 
-本地A6图7重跑：288个预期位置中提取233个数值、保留55个缺值；233个数值与项目既有摘录在0.6容差内一致，最大绝对差约0.266。此项属于与既有摘录的一致性回归，未独立证明旧摘录准确，也未完成55个缺值的逐项裁定；不能称整张图已完整核验。本仓库不上传论文PDF、项目底稿或逐点项目数据，详细案例记录保留在本地。原先“792个读数”的自述未在本轮复核。
+早期本地A6图7回归曾得到233个数值，与旧摘录在0.6容差内一致；后续回看原图发现旧摘录另有描边柱漏取、缺柱误填0及面板身份错误。现已增加描边识别与独立内容审查契约。这也说明与旧摘录一致不能证明原文读取正确；本包不宣称整张图已完整核验。本仓库不上传论文PDF、项目底稿或逐点项目数据，详细案例记录保留在本地。原先“792个读数”的自述未在本轮复核。
 
 ## 相关工具与定位
 
