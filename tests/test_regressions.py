@@ -17,6 +17,40 @@ class FakePage:
     def get_drawings(self): return self.items
 
 class Regression(unittest.TestCase):
+    def test_dashes_gap_limits_and_ambiguity(self):
+        from extract_dashes import sample
+        ss=[((0,10),(2,10)),((4,12),(6,12))]
+        out=sample(ss,[1,3,9],max_gap=3,endpoint_tolerance=0)
+        self.assertEqual([p[1] for p in out],[10,11,None])
+        self.assertIsNone(sample(ss,[3],max_gap=1,endpoint_tolerance=0)[0][1])
+        with self.assertRaises(ValueError):sample(ss+[ ((0,20),(2,20)) ],[1])
+        with self.assertRaises(ValueError):sample(ss,[1],max_gap=float('inf'))
+
+    def test_filled_quad_dashes_real_pdf_cli(self):
+        from extract_dashes import dash_segments
+        doc=fitz.open();pg=doc.new_page(width=160,height=160)
+        for x,y in [(20,80),(26,78),(32,76)]:
+            pg.draw_polyline([(x,y-.2),(x+4,y-.2),(x+4,y+.2),(x,y+.2)],closePath=True,fill=(0,0,0),color=None)
+        pg.draw_line((40,70),(40,70.3),width=2.5,color=(0,0,0))
+        pg.draw_line((10,90),(150,90),width=.2,color=(0,0,0),dashes='[1 1] 0')
+        ss,ids=dash_segments(pg,[10,10,150,150],5,.8,[2,3])
+        self.assertEqual(len(ss),4)
+        pdf=OUT/'填充虚线.pdf';doc.save(pdf);doc.close()
+        job={'pdf':str(pdf),'page':1,'figure':'synthetic quad dashes','conditions':{'series':'explicit single trace'},
+             'frame':[10,10,150,150],'fill_color':[0,0,0],'max_length':5,'max_thickness':.8,
+             'cap_width':[2,3],'max_gap':3,'endpoint_tolerance':0,
+             'x':{'ticks':[[0,0],[50,50],[100,100]]},'y':{'ticks':[[0,0],[50,50],[100,100]]},
+             'sample_at':[25,40,70],'prefix':str(OUT/'dashes')}
+        jp=OUT/'dashes_job.json';jp.write_text(json.dumps(job))
+        r=subprocess.run([sys.executable,'-X','utf8','-B',str(ROOT/'tools/extract_dashes.py'),str(jp)],capture_output=True,text=True,encoding='utf-8')
+        self.assertEqual(r.returncode,0,r.stderr)
+        d=json.loads((OUT/'dashes.json').read_text(encoding='utf-8'))
+        self.assertAlmostEqual(d['records'][0]['value'],79,places=4)
+        self.assertAlmostEqual(d['records'][1]['value'],70.15,places=3)
+        self.assertIsNone(d['records'][2]['value'])
+        self.assertEqual(d['_evidence']['records'][2]['status'],'missing')
+        self.assertTrue((OUT/'dashes_check.png').exists())
+
     def test_inventory_missing_duplicate_identity_and_points(self):
         from audit_workbook import audit
         wb=openpyxl.Workbook();ws=wb.active;ws.title='Data'
@@ -60,7 +94,7 @@ class Regression(unittest.TestCase):
         jp=OUT/'styles_job.json';jp.write_text(json.dumps(job))
         result=subprocess.run([sys.executable,'-X','utf8','-B',str(ROOT/'tools/extract_lines.py'),str(jp)],capture_output=True,text=True,encoding='utf-8')
         self.assertEqual(result.returncode,0,result.stderr)
-        data=json.loads((OUT/'styles.json').read_text())
+        data=json.loads((OUT/'styles.json').read_text(encoding='utf-8'))
         self.assertEqual(data['_evidence']['series_binding'],styles)
         self.assertTrue((OUT/'styles_check.png').exists())
 
@@ -254,9 +288,9 @@ class Regression(unittest.TestCase):
             self.assertTrue(data['_evidence']['records'])
             self.assertEqual(data['_evidence']['source']['figure'],'synthetic')
             self.assertTrue(Path(job['prefix']+'_check.png').is_file())
-        line=json.loads((OUT/'line.json').read_text());self.assertAlmostEqual(line['series']['A'][0][1],35)
-        point=json.loads((OUT/'point.json').read_text());self.assertAlmostEqual(point['points']['B'][0][0],130);self.assertAlmostEqual(point['points']['B'][0][1],50)
-        self.assertEqual(len(json.loads((OUT/'bar.json').read_text())['_evidence']['records']),2)
+        line=json.loads((OUT/'line.json').read_text(encoding='utf-8'));self.assertAlmostEqual(line['series']['A'][0][1],35)
+        point=json.loads((OUT/'point.json').read_text(encoding='utf-8'));self.assertAlmostEqual(point['points']['B'][0][0],130);self.assertAlmostEqual(point['points']['B'][0][1],50)
+        self.assertEqual(len(json.loads((OUT/'bar.json').read_text(encoding='utf-8'))['_evidence']['records']),2)
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--output-dir');args=parser.parse_args()
