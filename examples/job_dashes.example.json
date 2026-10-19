@@ -1,0 +1,62 @@
+{
+  "pdf": "paper.pdf",
+  "page": 1,
+  "figure": "Fig2(b)",
+  "conditions": {
+    "series": "future",
+    "unit": "mm"
+  },
+  "frame": [
+    20,
+    20,
+    180,
+    150
+  ],
+  "fill_color": [
+    0,
+    0,
+    0
+  ],
+  "max_length": 5,
+  "max_thickness": 0.8,
+  "max_gap": 3,
+  "endpoint_tolerance": 0.5,
+  "x": {
+    "ticks": [
+      [
+        20,
+        1
+      ],
+      [
+        100,
+        2
+      ],
+      [
+        180,
+        3
+      ]
+    ]
+  },
+  "y": {
+    "ticks": [
+      [
+        150,
+        0
+      ],
+      [
+        100,
+        50
+      ],
+      [
+        50,
+        100
+      ]
+    ]
+  },
+  "sample_at": [
+    1,
+    2,
+    3
+  ],
+  "prefix": "output/future_dashes"
+}
