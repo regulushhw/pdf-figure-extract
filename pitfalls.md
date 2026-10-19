@@ -11,6 +11,9 @@
 |---|---|---|
 
 | 已录值核对通过但整条曲线漏读 | 用原图预期系列作inventory契约，检查缺失、重复、身份及点数；预期清单错误仍可能漏检 | test_inventory_missing_duplicate_identity_and_points |
+| 跨行聚类把相近黑灰CDF合成一簇，再用最暗像素定身份、复制缺失系列 | 同坐标仅为检测候选，送回局部原图确认；逐行保留各条轨迹，不能用另一条曲线补缺。提示不强迫真实重合分开 | tests/test_agent_review.py::test_coincident_roles_are_queued_without_claiming_false_overlap；本地A7图6两概率位置四读数回图示例，非通用CDF识别器 |
+| scan长路径清单为空，被误读成整页没有矢量；或数值负号单独编码成控制字符 | 报告全部绘图对象数、位图原始尺寸与覆盖；独立符号span关联邻近数字后警告，符号仍须回图确认 | test_scan_short_paths_mixed_images_and_overlap_area、test_scan_flags_numeric_controls_without_sign_replacement |
+| 检查格数被当成有效数值数，文本p值落在数值契约外 | verify按实际值类型单列计数；p值按原文表达显式列入检查 | test_verify_value_types_distinguish_blanks_and_text |
 | 同色实线、虚线或不同线宽混淆，网格也符合线型 | 按图例显式绑定series_styles；重叠绑定报错，平行全宽网格束拒绝，匹配面板边框排除；填充块虚线转用专用单轨迹读取器 | test_real_pdf_style_binding_and_grid_rejection；真实A3实测仅覆盖两面板的描边实线 |
 | 虚线由填充短块或短描边组成，描边读取器漏整线 | 用extract_dashes读取已选定的单条轨迹，按长度/厚度排除非数据对象，限制断口插值；贴零原值保留，近零判断另留据 | test_filled_quad_dashes_real_pdf_cli、test_dashes_gap_limits_and_ambiguity；本地A3两条未来线实测，27个目标位置 |
 | 相邻面板粗细线对应身份不同 | 逐面板按图例绑定，不继承上一面板的线宽语义 | 本地A3 PDF p9 Fig3(a)/(b)，气候输入F6:Q7的24格身份改正；为单篇实例，不是自动识别保证 |

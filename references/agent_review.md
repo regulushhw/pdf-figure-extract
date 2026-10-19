@@ -33,6 +33,8 @@ python tools/review_points.py prepare job.json work/review --resume work/result.
 
 ## 少量决定替代重复取数
 
+不同角色的自动单候选若相距不超过1源图像素，`prepare`也会标记`coincident_roles`并排入检查。它可能是真实重合，也可能是跨行聚类把两条近邻曲线混成一条；看原像素后分别裁定，不默认共用读数。CLI JSON按UTF-8输出，不依赖Windows本机默认编码。
+
 ```json
 {"batch_id":"复制prepare返回的ID",
  "reviewer":{"kind":"agent","name":"Codex"},

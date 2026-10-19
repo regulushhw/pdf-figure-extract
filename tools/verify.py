@@ -57,12 +57,17 @@ def verify(xlsx,checks_path):
             for cell in row:expected.add((ws.title,cell.coordinate))
     if not expected:raise ValueError('检查范围为空')
     seen=set();failures=list(cache_report['failures'])
+    types={'numeric':0,'blank':0,'text':0,'boolean':0,'other':0}
     for c in config['checks']:
         key=(c['sheet'],c['cell'].upper())
         if key in seen:raise ValueError(f'重复检查：{key}')
         seen.add(key)
         try:
             got=wb[key[0]][key[1]].value
+            value_type=('blank' if got is None else 'boolean' if isinstance(got,bool)
+                        else 'numeric' if isinstance(got,numbers.Real)
+                        else 'text' if isinstance(got,str) else 'other')
+            types[value_type]+=1
             if formulas[key[0]][key[1]].data_type=='f' and got is None:
                 raise ValueError('公式无可读缓存，须先重算')
             want=get_by_path(json.loads((base/c['json']).read_text(encoding='utf-8-sig')),c['path'])
@@ -80,6 +85,7 @@ def verify(xlsx,checks_path):
     if seen!=expected:
         failures.append(f'覆盖不符：漏检{len(expected-seen)}，越界{len(seen-expected)}')
     return {'checked':len(seen),'expected':len(expected),'failures':failures,
+            'checked_value_types':types,
             'formula_cells':cache_report['formula_cells'],
             'scope':'workbook_vs_json_only'}
 

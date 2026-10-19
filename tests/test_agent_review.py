@@ -70,6 +70,16 @@ class AgentReviewTests(unittest.TestCase):
         result = review.read_json(self.run_apply(d)["output"])
         self.assertEqual(result["items"][0]["roles"]["lower"]["pixel"], source)
 
+    def test_coincident_roles_are_queued_without_claiming_false_overlap(self):
+        self.job['items'][0]['roles']={'black':[[80,90]],'gray':[[80,90]]}
+        review.write_json(self.jp,self.job)
+        out=review.prepare(self.jp,self.root/'coincident',limit=6,sample_every=0)
+        self.assertEqual(out['batch_items'],1)
+        card=review.read_json(out['manifest'])['items'][0]
+        self.assertIn('coincident_roles:black/gray',card['review_reasons'])
+        self.assertEqual(card['roles']['black'],card['roles']['gray'])
+        self.assertEqual(out['summary']['reviewed'],0)
+
     def test_resume_shows_corrected_pixel_without_dropping_other_roles(self):
         out = self.run_apply()
         prepared = review.prepare(self.jp, self.root / "batch", resume=out["output"], sample_every=1)

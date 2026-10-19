@@ -16,6 +16,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import sys
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -242,6 +243,16 @@ def prepare(job_path, out_dir, limit=6, offset=0, resume=None, sample_every=20, 
             reasons.append("missing_or_ambiguous")
         if item.get("flags"):
             reasons.append("proposal_flags")
+        # A pooled detector may assign one trajectory to two identities. Queue
+        # coincidences for visual judgment; genuine overlap remains allowed.
+        names=list(roles)
+        for i,left in enumerate(names):
+            for right in names[i+1:]:
+                a,b=roles[left],roles[right]
+                if (a['pixel'] is not None and b['pixel'] is not None
+                        and (a['status']=='automatic_candidate' or b['status']=='automatic_candidate')
+                        and math.dist(a['pixel'],b['pixel'])<=1.0):
+                    reasons.append(f'coincident_roles:{left}/{right}')
         if sample_every and index % sample_every == 0:
             reasons.append("automatic_sample")
         if reasons:
@@ -399,6 +410,8 @@ def main():
         result = prepare(args.job, args.out_dir, args.limit, args.offset, args.resume, args.sample_every, args.zoom)
     else:
         result = apply(args.manifest, args.decisions, args.output, args.resume)
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
     print(json.dumps(result, ensure_ascii=False, allow_nan=False))
 
 

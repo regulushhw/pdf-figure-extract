@@ -17,6 +17,55 @@ class FakePage:
     def get_drawings(self): return self.items
 
 class Regression(unittest.TestCase):
+    def test_scan_short_paths_mixed_images_and_overlap_area(self):
+        from scan_pages import scan_page,union_area
+        doc=fitz.open();page=doc.new_page(width=200,height=200)
+        page.draw_line((10,10),(30,30),color=(0,0,0))
+        pix=fitz.Pixmap(fitz.csRGB,fitz.IRect(0,0,20,20),False)
+        pix.clear_with(150)
+        page.insert_image(fitz.Rect(20,20,100,100),stream=pix.tobytes('png'))
+        rep=scan_page(page)
+        self.assertEqual(rep['drawing_count'],1)
+        self.assertEqual(rep['long_paths'],[])
+        self.assertAlmostEqual(rep['image_area_fraction'],.16)
+        self.assertEqual(rep['images'][0]['px'],[20,20])
+        self.assertEqual(rep['images'][0]['display_dpi_estimate'],[[18,18]])
+        self.assertEqual(rep['routing_hint'],'bitmap_present_review_each_panel')
+        self.assertTrue(rep['warnings'])
+        self.assertAlmostEqual(union_area([(0,0,10,10),(5,0,15,10),(0,0,10,10)]),150)
+        doc.close()
+
+    def test_scan_flags_numeric_controls_without_sign_replacement(self):
+        from scan_pages import scan_page
+        fake=type('TextPage',(),{
+            'rect':fitz.Rect(0,0,200,200),
+            'get_images':lambda self,**kw:[],
+            'get_drawings':lambda self:[],
+            'get_text':lambda self,*args:{'blocks':[{'type':0,'lines':[{'spans':[
+                {'bbox':(1,1,40,10),'text':'\x020.24'},
+                {'bbox':(1,20,40,30),'text':'0.25'},
+                {'bbox':(1,40,5,50),'text':'\x02'},
+                {'bbox':(5,40,40,50),'text':'0.28'}]}]}]}})()
+        rep=scan_page(fake)
+        self.assertEqual(len(rep['numeric_control_characters']),2)
+        flagged=rep['numeric_control_characters'][0]
+        self.assertEqual(flagged['codepoints'],['U+0002'])
+        self.assertEqual(flagged['text_repr'],repr('\x020.24'))
+        self.assertEqual(rep['numeric_control_characters'][1]['adjacent_numeric'][0]['text'],'0.28')
+
+    def test_verify_value_types_distinguish_blanks_and_text(self):
+        wb=openpyxl.Workbook();ws=wb.active;ws.title='Data'
+        for col,v in enumerate([1,None,'<0.001','0.002',False,0],1):ws.cell(1,col,v)
+        target=OUT/'types.xlsx';wb.save(target)
+        (OUT/'types_source.json').write_text(json.dumps([1,None,'<0.001','0.002',False,0]))
+        checks=[{'sheet':'Data','cell':f'{chr(65+i)}1','json':'types_source.json','path':[i]} for i in range(6)]
+        config=OUT/'types_checks.json'
+        config.write_text(json.dumps({'ranges':[{'sheet':'Data','range':'A1:F1'}],'checks':checks}))
+        result=verify(target,config)
+        self.assertFalse(result['failures'])
+        self.assertEqual(result['checked'],6)
+        self.assertEqual(result['checked_value_types'],{'numeric':2,'blank':1,'text':2,'boolean':1,'other':0})
+
     def test_dashes_gap_limits_and_ambiguity(self):
         from extract_dashes import sample
         ss=[((0,10),(2,10)),((4,12),(6,12))]
