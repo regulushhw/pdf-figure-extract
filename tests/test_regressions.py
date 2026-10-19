@@ -2,6 +2,7 @@
 运行：python tests/test_regressions.py [--output-dir PATH]
 """
 import sys,json,tempfile,unittest,subprocess,argparse
+import zipfile,xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 sys.dont_write_bytecode=True
@@ -42,6 +43,50 @@ class Regression(unittest.TestCase):
         with self.assertRaises(ValueError):self.check(c)
         c=self.make_checks();c['checks'][0]['tol']=float('inf')
         self.assertTrue(self.check(c)['failures'])
+
+    def formula_fixture(self):
+        c=self.make_checks()
+        wb=openpyxl.load_workbook(OUT/'book.xlsx')
+        wb['Data']['Z99']='=2+2';wb.save(OUT/'book.xlsx')
+        return c
+
+    def set_fixture_cache(self,value,error=False):
+        # Synthetic cache fixture only; no calculation engine is simulated.
+        path=OUT/'book.xlsx'
+        with zipfile.ZipFile(path) as z:data={n:z.read(n) for n in z.namelist()}
+        ns={'m':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+        tree=ET.fromstring(data['xl/worksheets/sheet1.xml'])
+        cell=tree.find('.//m:c[@r="Z99"]',ns)
+        if error:cell.set('t','e')
+        else:cell.attrib.pop('t',None)
+        val=cell.find('m:v',ns)
+        if val is None:val=ET.SubElement(cell,'{'+ns['m']+'}v')
+        val.text=str(value)
+        data['xl/worksheets/sheet1.xml']=ET.tostring(tree)
+        with zipfile.ZipFile(path,'w',zipfile.ZIP_DEFLATED) as z:
+            for n,b in data.items():z.writestr(n,b)
+
+    def test_verify_formula_cache_outside_ranges(self):
+        c=self.formula_fixture()
+        self.assertTrue(self.check(c)['failures'])
+        self.set_fixture_cache(4)
+        self.assertFalse(self.check(c)['failures'])
+
+    def test_audit_formula_cache_outside_contract(self):
+        from audit_workbook import audit
+        self.formula_fixture();path=OUT/'formula_audit.json'
+        path.write_text(json.dumps({'rules':[{'kind':'count','sheet':'Data','range':'F6:F6','expected':1,'source':'synthetic original single point'}]}))
+        self.assertTrue(audit(OUT/'book.xlsx',path)['failures'])
+        self.set_fixture_cache(4)
+        self.assertFalse(audit(OUT/'book.xlsx',path)['failures'])
+
+    def test_formula_error_cache_rejected(self):
+        from audit_workbook import audit
+        c=self.formula_fixture();self.set_fixture_cache('#DIV/0!',error=True)
+        self.assertTrue(self.check(c)['failures'])
+        path=OUT/'formula_error_audit.json'
+        path.write_text(json.dumps({'rules':[{'kind':'count','sheet':'Data','range':'F6:F6','expected':1,'source':'synthetic original point'}]}))
+        self.assertTrue(audit(OUT/'book.xlsx',path)['failures'])
 
     def test_calibration_and_color(self):
         f,inv,ab,resid,chain=calib.fit_axis([(0,0),(3,999),(10,20),(20,40),(30,60)])
@@ -175,3 +220,4 @@ if __name__=='__main__':
     (OUT/'test_results.json').write_text(json.dumps({'tests':result.testsRun,'failures':len(result.failures),'errors':len(result.errors),'scope':'synthetic_regression_only'},indent=2))
     if temporary:temporary.cleanup()
     sys.exit(0 if result.wasSuccessful() else 1)
+
