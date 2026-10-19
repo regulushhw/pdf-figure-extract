@@ -11,7 +11,10 @@
 |---|---|---|
 
 | 已录值核对通过但整条曲线漏读 | 用原图预期系列作inventory契约，检查缺失、重复、身份及点数；预期清单错误仍可能漏检 | test_inventory_missing_duplicate_identity_and_points |
-| 同色实线、虚线或不同线宽混淆，网格也符合线型 | 按图例显式绑定series_styles；重叠绑定报错，平行全宽网格束拒绝，匹配面板边框排除；不支持填充块虚线 | test_real_pdf_style_binding_and_grid_rejection；真实A3实测仅覆盖两面板的描边实线 |
+| 同色实线、虚线或不同线宽混淆，网格也符合线型 | 按图例显式绑定series_styles；重叠绑定报错，平行全宽网格束拒绝，匹配面板边框排除；填充块虚线转用专用单轨迹读取器 | test_real_pdf_style_binding_and_grid_rejection；真实A3实测仅覆盖两面板的描边实线 |
+| 虚线由填充短块或短描边组成，描边读取器漏整线 | 用extract_dashes读取已选定的单条轨迹，按长度/厚度排除非数据对象，限制断口插值；贴零原值保留，近零判断另留据 | test_filled_quad_dashes_real_pdf_cli、test_dashes_gap_limits_and_ambiguity；本地A3两条未来线实测，27个目标位置 |
+| 相邻面板粗细线对应身份不同 | 逐面板按图例绑定，不继承上一面板的线宽语义 | 本地A3 PDF p9 Fig3(a)/(b)，气候输入F6:Q7的24格身份改正；为单篇实例，不是自动识别保证 |
+| Windows路径含中文，JSON按系统GBK回读失败 | 显式UTF-8读写；测试PDF使用中文文件名，保留真实CLI证据检查 | test_filled_quad_dashes_real_pdf_cli及中文过程目录回归 |
 | 契约范围外存在空公式缓存或错误缓存 | verify/audit同时检查整本公式缓存；仍需最后保存后的算术核对，空缓存也可能是有意空串，须由计算引擎确认，不能静默算通过 | 缓存范围外缺失、有效缓存与错误缓存三项合成样例 |
 | 空检查或只检查一部分数值 | verify拒绝空清单、漏检、重复和越界；范围由任务与底稿确定，不能缩小来通过 | verify相关合成样例 |
 
