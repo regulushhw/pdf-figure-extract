@@ -18,6 +18,29 @@ def get_by_path(obj,path):
     return obj
 
 
+def formula_cache_report(formulas,values):
+    """Read-only saved-file check, including formulas outside declared ranges.
+
+    An empty cache is not proof of an intentionally blank formula result.
+    Resolve such cases in the calculation engine before reporting success.
+    This checks readability/errors, not formula arithmetic or freshness.
+    """
+    count=0;failures=[]
+    for ws in formulas:
+        for row in ws:
+            for cell in row:
+                if cell.data_type!='f':continue
+                count+=1;cached=values[ws.title][cell.coordinate]
+                label=f'{ws.title}!{cell.coordinate}'
+                if cached.value is None:
+                    failures.append(f'{label}: formula cache is empty; recalculate after the last edit')
+                elif cached.data_type=='e':
+                    failures.append(f'{label}: formula cache contains Excel error {cached.value}')
+                elif isinstance(cached.value,numbers.Real) and not math.isfinite(float(cached.value)):
+                    failures.append(f'{label}: formula cache is not finite')
+    return {'formula_cells':count,'failures':failures}
+
+
 def verify(xlsx,checks_path):
     base=Path(checks_path).resolve().parent
     config=json.loads(Path(checks_path).read_text(encoding='utf-8-sig'))
@@ -25,6 +48,7 @@ def verify(xlsx,checks_path):
         raise ValueError('必须提供非空checks与完整数值区ranges；空检查不能通过')
     wb=openpyxl.load_workbook(xlsx,data_only=True)
     formulas=openpyxl.load_workbook(xlsx,data_only=False)
+    cache_report=formula_cache_report(formulas,wb)
     expected=set()
     for r in config['ranges']:
         lo,top,hi,bottom=range_boundaries(r['range'])
@@ -32,7 +56,7 @@ def verify(xlsx,checks_path):
         for row in ws.iter_rows(min_row=top,max_row=bottom,min_col=lo,max_col=hi):
             for cell in row:expected.add((ws.title,cell.coordinate))
     if not expected:raise ValueError('检查范围为空')
-    seen=set();failures=[]
+    seen=set();failures=list(cache_report['failures'])
     for c in config['checks']:
         key=(c['sheet'],c['cell'].upper())
         if key in seen:raise ValueError(f'重复检查：{key}')
@@ -56,6 +80,7 @@ def verify(xlsx,checks_path):
     if seen!=expected:
         failures.append(f'覆盖不符：漏检{len(expected-seen)}，越界{len(seen-expected)}')
     return {'checked':len(seen),'expected':len(expected),'failures':failures,
+            'formula_cells':cache_report['formula_cells'],
             'scope':'workbook_vs_json_only'}
 
 
@@ -67,3 +92,4 @@ def main():
     sys.exit(1 if result['failures'] else 0)
 
 if __name__=='__main__':main()
+
