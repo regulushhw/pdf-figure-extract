@@ -17,6 +17,53 @@ class FakePage:
     def get_drawings(self): return self.items
 
 class Regression(unittest.TestCase):
+    def test_inventory_missing_duplicate_identity_and_points(self):
+        from audit_workbook import audit
+        wb=openpyxl.Workbook();ws=wb.active;ws.title='Data'
+        ws.append(['observed',1,2]);wb.save(OUT/'inventory.xlsx')
+        rule={'kind':'inventory','sheet':'Data','row_range':[1,5],
+              'key_columns':['A'],'value_columns':['B','C'],
+              'expected':[{'key':['observed'],'count':2},{'key':['future'],'count':2}],
+              'source':'synthetic original: two labelled series, two points each'}
+        path=OUT/'inventory.json';path.write_text(json.dumps({'rules':[rule]}))
+        def run():
+            wb.save(OUT/'inventory.xlsx');return audit(OUT/'inventory.xlsx',path)
+        self.assertIn('漏掉整条系列',run()['failures'][0]['error'])
+        ws.append(['future',3,4]);self.assertFalse(run()['failures'])
+        ws.append(['future',3,4]);self.assertTrue(run()['failures'])
+        ws.delete_rows(3);ws['C2']=None;self.assertTrue(run()['failures'])
+        ws['C2']=4;ws['A2']='wrong identity';self.assertTrue(run()['failures'])
+
+    def test_real_pdf_style_binding_and_grid_rejection(self):
+        doc=fitz.open();pg=doc.new_page(width=200,height=200)
+        pg.draw_line((20,40),(180,80),color=(0,0,0),width=.4)
+        pg.draw_line((20,80),(180,120),color=(0,0,0),width=.8)
+        pg.draw_rect(fitz.Rect(10,10,190,190),color=(0,0,0),width=.4)
+        axis={'f':lambda v:v,'inv':lambda v:v}
+        styles=[{'name':name,'color':'0,0,0','width_range':bounds,'line_style':'solid'}
+                for name,bounds in [('thin',[.39,.41]),('bold',[.79,.81])]]
+        res,_=lines.extract_lines(pg,[10,10,190,190],None,axis,axis,[100],styles)
+        self.assertAlmostEqual(res['thin'][0][1],60);self.assertAlmostEqual(res['bold'][0][1],100)
+        with self.assertRaises(ValueError):lines.extract_lines(pg,[10,10,190,190],None,axis,axis,[100],styles+[dict(styles[0],name='ambiguous')])
+        shape=pg.new_shape()
+        for y in (140,160,180):shape.draw_line((20,y),(180,y))
+        shape.finish(color=(0,0,0),width=.2,dashes='[1 1] 0');shape.commit()
+        with self.assertRaisesRegex(ValueError,'网格'):
+            lines.extract_lines(pg,[10,10,190,190],None,axis,axis,[100],
+                [{'name':'future','color':'0,0,0','width_range':[.19,.21],'line_style':'dashed'}])
+        pdf=OUT/'styles.pdf';doc.save(pdf);doc.close()
+        job={'pdf':str(pdf),'page':1,'figure':'synthetic_styles','conditions':{'unit':'test'},
+             'frame':[10,10,190,190],'series_styles':styles,
+             'x':{'ticks':[[20,20],[100,100],[180,180]]},
+             'y':{'ticks':[[20,20],[100,100],[180,180]]},
+             'sample_at':[100],'prefix':str(OUT/'styles')}
+        jp=OUT/'styles_job.json';jp.write_text(json.dumps(job))
+        result=subprocess.run([sys.executable,'-X','utf8','-B',str(ROOT/'tools/extract_lines.py'),str(jp)],capture_output=True,text=True,encoding='utf-8')
+        self.assertEqual(result.returncode,0,result.stderr)
+        data=json.loads((OUT/'styles.json').read_text())
+        self.assertEqual(data['_evidence']['series_binding'],styles)
+        self.assertTrue((OUT/'styles_check.png').exists())
+
     def test_empty_checks_rejected(self):
         (OUT/'empty.json').write_text('[]')
         with self.assertRaises(ValueError):verify('unused',OUT/'empty.json')
