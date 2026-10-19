@@ -53,6 +53,6 @@ Agent须查看apply生成的`*_check_*.png`；其`viewed=false`是提醒，不�
 
 ## 检查范围
 
-同一Agent提点再看叠图属于自检。`reviewed`只指本角色已明确回图决定，不证明情景归属、原论文统计定义或整篇范围正确；自动抽查不能称全量视觉复核。本接口的合成验证见`tests/test_agent_review.py`；真实论文试用结果留在项目过程目录，不能当成所有扫描件的准确率。
+同一Agent提点再看叠图属于自检。`numeric_roles_proposed`计有数值的候选与已看图读数，`numeric_roles_unresolved`计缺失/多解，`visual_roles_unreviewed`计尚未逐点看图；三者分开，不要求把所有自动候选逐格交给模型，也不把有候选误写成已核。按原提取器适用的批量检查及抽样决定自动数据的使用范围。`reviewed`只指本角色已明确回图决定，不证明情景归属、原论文统计定义或整篇范围正确；自动抽查不能称全量视觉复核。本接口的合成验证见`tests/test_agent_review.py`；真实论文试用结果留在项目过程目录，不能当成所有扫描件的准确率。
 
 方法参考：[PlotTracer误差线交互设计](https://github.com/katalystnord/plottracer/blob/master/docs/error-bars-design.md)中的锚点与像素测量思路。本工具为独立实现，未复制该项目代码，也未使用镜像端点作为测量值。

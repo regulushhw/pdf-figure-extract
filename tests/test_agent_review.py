@@ -56,7 +56,8 @@ class AgentReviewTests(unittest.TestCase):
         self.assertEqual(b["roles"]["lower"]["status"], "automatic_candidate")
         self.assertEqual(a["limitations"], ["identity limit"])
         self.assertEqual(out["summary"]["numeric_roles_reviewed"], 1)
-        self.assertEqual(out["summary"]["numeric_roles_incomplete"], 3)
+        self.assertEqual(out["summary"]["visual_roles_unreviewed"], 3)
+        self.assertEqual(out["summary"]["numeric_roles_unresolved"], 0)
         self.assertFalse(out["check_images"][0]["viewed"])
 
     def test_sheet_coordinate_roundtrip(self):
@@ -109,7 +110,8 @@ class AgentReviewTests(unittest.TestCase):
         out = self.run_apply(d)
         result = review.read_json(out["output"])
         self.assertIsNone(result["items"][0]["roles"]["lower"]["value"])
-        self.assertEqual(result["summary"]["numeric_roles_incomplete"], 4)
+        self.assertEqual(result["summary"]["numeric_roles_unresolved"], 1)
+        self.assertEqual(result["summary"]["visual_roles_unreviewed"], 3)
         prepared = review.prepare(self.jp, self.root / "batch", resume=out["output"], sample_every=1)
         self.assertNotEqual(Path(prepared["manifest"]), self.mp)
         self.assertEqual(prepared["summary"]["explicit_missing"], 1)

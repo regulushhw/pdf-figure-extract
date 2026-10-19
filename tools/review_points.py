@@ -152,7 +152,9 @@ def summary(result):
             states[role["status"]] += 1
     return {"items": len(result["items"]), "roles": sum(states.values()), **states,
             "numeric_roles_reviewed": states["reviewed"],
-            "numeric_roles_incomplete": sum(states.values()) - states["reviewed"],
+            "numeric_roles_proposed": states["automatic_candidate"] + states["reviewed"],
+            "numeric_roles_unresolved": states["needs_review"] + states["explicit_missing"],
+            "visual_roles_unreviewed": states["automatic_candidate"] + states["needs_review"],
             "review_scope": "visual self-check; not independent source validation"}
 
 
