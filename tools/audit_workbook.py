@@ -8,6 +8,7 @@ source_records的json相对契约文件，内容为[{sheet,cell,value,method/sta
 import json,sys,math,numbers
 from pathlib import Path
 import openpyxl
+from verify import formula_cache_report
 
 def same(a,b,tol=1e-8):
     if isinstance(a,numbers.Real) and isinstance(b,numbers.Real):
@@ -18,7 +19,10 @@ def audit(workbook,contract):
     contract=Path(contract);config=json.loads(contract.read_text(encoding='utf-8-sig'))
     rules=config.get('rules',[])
     if not rules:raise ValueError('无审查规则，不能通过')
-    wb=openpyxl.load_workbook(workbook,data_only=True);failures=[];checked=0
+    wb=openpyxl.load_workbook(workbook,data_only=True)
+    formulas=openpyxl.load_workbook(workbook,data_only=False)
+    cache_report=formula_cache_report(formulas,wb)
+    failures=[{'rule':'formula_cache','error':message} for message in cache_report['failures']];checked=0
     for index,rule in enumerate(rules):
         try:
             if not rule.get('source'):raise ValueError('缺少原文/依据定位')
@@ -47,10 +51,12 @@ def audit(workbook,contract):
                 checked+=1
             else:raise ValueError(f'未知检查类型：{kind}')
         except Exception as exc:failures.append({'rule':index,'error':str(exc)})
-    return {'checked':checked,'failures':failures,'scope':'declared_contract_only; original_source_review_still_required'}
+    return {'checked':checked,'failures':failures,'formula_cells':cache_report['formula_cells'],
+            'scope':'declared_contract_only; original_source_review_still_required'}
 
 if __name__=='__main__':
     try:result=audit(sys.argv[1],sys.argv[2])
     except Exception as exc:result={'failures':[str(exc)]}
     print(json.dumps(result,ensure_ascii=False,indent=2))
     sys.exit(1 if result['failures'] else 0)
+
