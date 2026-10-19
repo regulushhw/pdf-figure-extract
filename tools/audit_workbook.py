@@ -2,13 +2,47 @@
 python tools/audit_workbook.py workbook.xlsx audit.json
 audit.json: {"rules":[{"kind":"cell","sheet":"数据","cell":"C6",
 "expected":-0.21,"source":"PDF p5 Table2"}, ...]}
-支持cell、count、sequence、source_records；失败退出1，空规则拒绝通过。
+支持cell、count、sequence、source_records、inventory；失败退出1，空规则拒绝通过。
 source_records的json相对契约文件，内容为[{sheet,cell,value,method/status},...]。
 """
 import json,sys,math,numbers
 from pathlib import Path
 import openpyxl
 from verify import formula_cache_report
+
+def inventory_check(ws, rule):
+    """Compare source-declared series with rows, including completely absent series."""
+    from openpyxl.utils.cell import column_index_from_string
+    keys=rule['key_columns'];values=rule['value_columns']
+    if not keys or not values or len(set(keys+values))!=len(keys+values):
+        raise ValueError('身份列与数值列须非空、唯一且互不重叠')
+    for col in keys+values:column_index_from_string(col)
+    first,last=rule['row_range']
+    if not isinstance(first,int) or not isinstance(last,int) or not 1<=first<=last:
+        raise ValueError('无效行范围')
+    expected={}
+    for item in rule['expected']:
+        key=tuple(item['key']);count=item['count']
+        if len(key)!=len(keys) or key in expected:raise ValueError('预期身份键重复或长度错误')
+        if type(count) is not int or not 0<count<=len(values):raise ValueError('预期点数无效')
+        expected[key]=count
+    if not expected:raise ValueError('原图系列清单为空')
+    actual={};errors=[]
+    for row in range(first,last+1):
+        key=tuple(ws[f'{col}{row}'].value for col in keys)
+        vals=[ws[f'{col}{row}'].value for col in values]
+        finite=lambda v:isinstance(v,numbers.Real) and not isinstance(v,bool) and math.isfinite(float(v))
+        if key not in expected and not any(finite(v) for v in vals):continue
+        if key in actual:errors.append(f'重复系列：{key!r}（行{actual[key][0]}/{row}）')
+        actual[key]=(row,sum(finite(v) for v in vals))
+        if any(isinstance(v,numbers.Real) and not isinstance(v,bool) and not finite(v) for v in vals):
+            errors.append(f'非有限值：行{row}')
+    for key,count in expected.items():
+        if key not in actual:errors.append(f'漏掉整条系列：{key!r}')
+        elif actual[key][1]!=count:errors.append(f'系列点数{actual[key][1]}，预期{count}：{key!r}')
+    for key in actual.keys()-expected.keys():errors.append(f'清单外系列：{key!r}')
+    if errors:raise ValueError('; '.join(errors))
+    return len(expected)
 
 def same(a,b,tol=1e-8):
     if isinstance(a,numbers.Real) and isinstance(b,numbers.Real):
@@ -27,7 +61,9 @@ def audit(workbook,contract):
         try:
             if not rule.get('source'):raise ValueError('缺少原文/依据定位')
             kind=rule['kind']
-            if kind=='source_records':
+            if kind=='inventory':
+                checked+=inventory_check(wb[rule['sheet']],rule)
+            elif kind=='source_records':
                 rows=json.loads((contract.parent/rule['json']).read_text(encoding='utf-8-sig'))
                 if not rows:raise ValueError('源记录为空')
                 for r in rows:
