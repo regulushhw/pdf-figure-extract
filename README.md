@@ -130,3 +130,35 @@ python /path/to/tests/test_regressions.py
 - [chart-data-extractor skill](https://github.com/mohitagw15856/pm-claude-skills/blob/main/skills/chart-data-extractor/SKILL.md)：已审读身份、歧义与输出组织；其特定模型分辨率和可靠性自述未独立验证，不纳入能力承诺，也不引入强制七段报告。
 
 以上为公开方法与接口设计的参考，本工具独立实现；没有据此宣称识别精度超过这些项目。
+
+## 交叉曲线：带锚点的路径提议
+
+`python tools/trace_bitmap.py trace_job.json new_output_dir`在保留的墨迹段上做前向/后向动态规划，约束路径经过已确认锚点；输出逐列像素、全部路径依据、回叠PNG及可交给`review_points`的采样候选。不使用模型，也不把结果自动称为已核。图例身份、校准及原图检查仍由调用方负责。
+
+输入的`sources`、`panels`沿用现有检查接口，新增`traces`列表，例如：
+
+```json
+{"sources":{"s":{"image":"figure.png"}},
+ "panels":{"a":{"source":"s","bounds":[1,1,108,108],
+ "axis":{"coordinate":"y","ticks":[[10,100],[90,0]],"unit":"%"}}},
+ "traces":[{"id":"target","panel":"a","identity":{"series":"按原图确认"},
+ "roi":[5,5,100,100],"selector":{"mode":"gray","range":[0,80]},
+ "anchors":[[10,10],[90,90]],"max_step_px":2,"anchor_tolerance_px":2,
+ "ambiguity_cost":0.5,"sample_x":[10,30,50,70,90]}]}
+```
+
+锚点须来自看图，x递增；首尾锚点限定追踪区间，内部锚点可选分支。`max_step_px`是每列允许的跳幅，不是结果误差；不得为迎合既有数值而放宽。代价按保留墨迹中心之间的像素跳动累计，只选择路径、不对读数做事后平滑。
+
+同代价/近代价分支保留多候选，代价差不是概率；多墨迹、厚墨迹和分支数变化继续排查。尖峰旁若还有平缓轨迹，最短路径可能选错，须在真实尖峰处加锚点，不能把短路径当真值。没有墨迹的列保留缺值；间断后无两侧局部锚点的段不自动赋予身份。此实现尚不跨缺口连接虚线，也不处理非单值x轨迹。同线长距离完全重合只能记录同一可见轨迹，不能恢复被遮挡细节。
+
+真实试读：本地A7第9页图7 RHUM局部（x=820–850）在当前灰度126–160与每列18px约束下返回`disconnected_path`。这只是当前方法/参数失败，不证明所有方法无解；该图未因此改写底稿或升级核验状态。
+
+`python tests/test_trace_bitmap.py`验证交叉、两侧/中间锚点、尖峰、同代价多解、缺墨、断路及现有检查接口。合成已知几何通过不代表A7整图已解决。
+
+### 后续方法选择的研究依据
+
+- [降雨自记纸曲线提取研究](https://journals.ametsoc.org/abstract/journals/atot/28/7/2011jtecha1505_1.xml)使用动态规划追踪曲线似然图；支持研究路径式追踪，不证明它适配本项目所有多线扫描件。
+- [LineFormer官方仓库](https://github.com/TheJaeLal/LineFormer)将折线提取建模为实例分割；官方说明它输出像素点，轴信息须另取。当前未安装其依赖、未下载权重或在A7实测，不报告其对A7的准确率。
+- [LineEX官方仓库](https://github.com/Shiva-sankaran/LineEX)把关键点、图表文字、分组与图例映射分开；可参考这种职责分离，模型效果仍需本地图像验证。
+
+本工具独立实现路径选择与接续接口，未复制上述项目代码或附带模型权重。优先检查分线错误位置，再决定补锚点、线型/线宽特征或实例分割实验；不能通过曲线平滑让误差消失。
