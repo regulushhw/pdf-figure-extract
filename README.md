@@ -75,3 +75,31 @@ python /path/to/tests/test_regressions.py
 
 本项目的代码与配套文档采用 [MIT许可证](LICENSE)。第三方依赖仍遵循各自许可证；输入论文、项目数据及提取结果不因使用本工具而自动获得MIT授权。
 
+
+## 原始读数与取样保护
+
+`audit_workbook.py`新增两种显式规则（旧契约保持兼容）：
+
+```json
+{"rules":[
+ {"kind":"sampling","sheet":"Data","range":"B1:D1","expected":[1980,1990,2000],"source":"用户确认的取样范围"},
+ {"kind":"extraction_records","sheet":"Data","range":"B2:D2","json":"raw.json","sha256":"原始JSON文件的SHA-256","source":"提取前确认的图表范围"}
+]}
+```
+
+`raw.json`为逐格记录列表，例如：
+
+```json
+[{"sheet":"Data","cell":"B2","raw_value":-1.29,"method":"direct","source":"PDF p9 Fig7 / 原始取点坐标"}]
+```
+
+例中单条记录只说明格式；实际列表须覆盖规则整个范围，包括缺值。
+
+- `direct`/`neighbor`：底稿必须与`raw_value`一致，禁止静默替换。
+- `missing`：原始值和底稿均为空。
+- `interpolated`：原始值须为空，另有`calculation:{"value":数值,"inputs":[输入位置或数值]}`；底稿与计算结果一致。工具检查记录完整性，不推断插值公式。
+- `reviewed`：允许纠正原始值，但须留`review:{"source":"原图位置","pixel":[x,y],"value":重读值}`；不覆盖`raw_value`。
+
+保留取点时固定文件摘要，不从最终底稿重建原始记录。`sampling`检查约定坐标与实际表头逐项一致；结合`inventory`核对每个系列数值覆盖。机器不会验证用户是否实际同意范围，也不能证明坐标或原始取点正确。未声明这些规则的旧契约不会获得新增保护。
+
+验证：`python tests/test_extraction_guard.py`，覆盖真实突变、非法替换、缺值与插值、坐标重读、错年、摘要变化及记录漏检；是合成行为验证，不是论文识别精度测试。
