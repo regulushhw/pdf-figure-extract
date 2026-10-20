@@ -103,3 +103,30 @@ python /path/to/tests/test_regressions.py
 保留取点时固定文件摘要，不从最终底稿重建原始记录。`sampling`检查约定坐标与实际表头逐项一致；结合`inventory`核对每个系列数值覆盖。机器不会验证用户是否实际同意范围，也不能证明坐标或原始取点正确。未声明这些规则的旧契约不会获得新增保护。
 
 验证：`python tests/test_extraction_guard.py`，覆盖真实突变、非法替换、缺值与插值、坐标重读、错年、摘要变化及记录漏检；是合成行为验证，不是论文识别精度测试。
+
+## 位图批量候选 → Agent局部裁定
+
+`python tools/propose_bitmap_points.py bitmap_job.json new_output_dir`生成`review_job.json`、掩膜和红色掩膜叠图；再用`review_points.py prepare/apply`看图、选候选或修坐标。无新增依赖，不调用模型。输出目录须不存在，原图只读。
+
+输入沿用[Agent检查接口](references/agent_review.md)的`sources`、`panels`与`items`；每个item把`roles`换成`selector`，例如：
+
+```json
+{"id":"series-month","panel":"a","identity":{"series":"按原图图例确认"},
+ "anchor":[80,100],"roi":[60,30,100,175],
+ "selector":{"mode":"gray","range":[0,80]},
+ "exclude_boxes":[[60,30,70,40]],"neighbor_px":2,"max_run_px":8}
+```
+
+也可设`selector:{"mode":"color","rgb":[255,0,0],"tolerance":20}`。ROI、排除框、锚点和邻列窗口均为原图像素；每个item可使用不同的曲线局部区域。范围与阈值需看掩膜确认，不按论文通用。
+
+检测将同一列每个连续墨迹段独立保留，不把上下两条线平均成一条。目标列无墨迹时，仅在明确的邻列窗口内找最近有墨迹列，左右同距均保留且标记；超过窗口仍缺失，不跨年份补值。厚墨迹、多个候选、邻列及无候选送已有检查队列。单候选仍是未复核候选；交叉后合成一段也可能分不开，不能用候选数量证明身份。此工具提供采样点候选，不是整条曲线自动追踪器。
+
+验证：`python tests/test_bitmap_points.py`，覆盖多轨迹不平均、图例遮罩、灰度/颜色、缺点与邻列、厚墨迹、检查接口接通及原图不变。
+
+### 本轮参考与取舍
+
+- [PlotTracer README](https://github.com/katalystnord/plottracer/blob/master/README.md)：参考ROI限定、掩膜预览及anchor/interpolated区分；该仓库标AGPL-3.0，本包未复制其代码。
+- [scientific-plot-digitizer脚本](https://github.com/huangjn58/scientific-plot-digitizer/blob/main/scientific-plot-digitizer/scripts/digitize_plot.py)与[指南](https://github.com/huangjn58/scientific-plot-digitizer/blob/main/scientific-plot-digitizer/references/extraction-guide.md)：参考颜色/灰度筛选、局部ROI与叠图检查。其group_line按整列像素取统计量，未区分同列多轨迹；本包不采用这种合并方式。该指南也把重叠同色曲线列为交互处理情形。
+- [chart-data-extractor skill](https://github.com/mohitagw15856/pm-claude-skills/blob/main/skills/chart-data-extractor/SKILL.md)：已审读身份、歧义与输出组织；其特定模型分辨率和可靠性自述未独立验证，不纳入能力承诺，也不引入强制七段报告。
+
+以上为公开方法与接口设计的参考，本工具独立实现；没有据此宣称识别精度超过这些项目。
