@@ -2,10 +2,10 @@
 python tools/audit_workbook.py workbook.xlsx audit.json
 audit.json: {"rules":[{"kind":"cell","sheet":"数据","cell":"C6",
 "expected":-0.21,"source":"PDF p5 Table2"}, ...]}
-支持cell、count、sequence、source_records、inventory；失败退出1，空规则拒绝通过。
+支持cell、count、sequence、source_records、inventory、extraction_records、sampling；失败退出1，空规则拒绝通过。
 source_records的json相对契约文件，内容为[{sheet,cell,value,method/status},...]。
 """
-import json,sys,math,numbers
+import json,sys,math,numbers,hashlib
 from pathlib import Path
 import openpyxl
 from verify import formula_cache_report
@@ -49,6 +49,55 @@ def same(a,b,tol=1e-8):
         return math.isfinite(float(a)) and math.isfinite(float(b)) and abs(a-b)<=tol
     return type(a) is type(b) and a==b
 
+def extraction_records_check(wb, rule, base):
+    """Check saved values against retained raw readings, not regenerated expectations."""
+    path=base/rule['json']
+    digest=hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest!=rule['sha256']:raise ValueError('原始取点记录摘要不符')
+    rows=json.loads(path.read_text(encoding='utf-8-sig'))
+    if not rows:raise ValueError('原始取点记录为空')
+    seen=set()
+    for r in rows:
+        key=(r['sheet'],r['cell'])
+        if key in seen:raise ValueError(f'重复取点记录：{key}')
+        seen.add(key)
+        raw=r['raw_value'];value=wb[key[0]][key[1]].value
+        method=r['method']
+        if not r.get('source'):raise ValueError(f'取点缺出处：{key}')
+        finite=lambda v:type(v) in (int,float) and math.isfinite(v)
+        if raw is not None and not finite(raw):raise ValueError(f'原始读数无效：{key}')
+        if method in ('direct','neighbor'):
+            if raw is None or not same(value,raw):
+                raise ValueError(f'直接/邻列读数被替换：{key}')
+        elif method=='missing':
+            if raw is not None or value is not None:raise ValueError(f'缺值被填入：{key}')
+        elif method=='interpolated':
+            if raw is not None:raise ValueError(f'插值覆盖已有读数：{key}')
+            if not finite(value) or not r.get('calculation'):
+                raise ValueError(f'插值缺计算依据：{key}')
+            if not same(value,r['calculation']['value']):raise ValueError(f'插值结果不符：{key}')
+            if not r['calculation'].get('inputs'):raise ValueError(f'插值缺输入：{key}')
+        elif method=='reviewed':
+            review=r.get('review',{});pixel=review.get('pixel',[])
+            if not review.get('source') or len(pixel)!=2 or not all(finite(v) for v in pixel):
+                raise ValueError(f'重读缺原图与坐标：{key}')
+            if not finite(value) or not same(value,review.get('value')):
+                raise ValueError(f'重读结果不符：{key}')
+        else:raise ValueError(f'未知取点方法：{method}')
+    expected={(rule['sheet'],c.coordinate) for row in wb[rule['sheet']][rule['range']] for c in row}
+    if seen!=expected:raise ValueError(f'取点覆盖不符：漏{len(expected-seen)}，越界{len(seen-expected)}')
+    return len(seen)
+
+def sampling_check(ws, rule):
+    """Check agreed coordinates, including missing positions, against saved headers."""
+    expected=rule['expected'];cells=[c for row in ws[rule['range']] for c in row]
+    if not expected or any(v is None for v in expected):raise ValueError('约定取样坐标为空')
+    if len(expected)!=len(set(expected)):raise ValueError('约定取样坐标重复')
+    actual=[c.value for c in cells]
+    if len(actual)!=len(expected) or not all(same(a,b) for a,b in zip(actual,expected)):
+        raise ValueError('实际日期/概率取样与约定不符（漏点、错位或顺序错误）')
+    return len(expected)
+
 def audit(workbook,contract):
     contract=Path(contract);config=json.loads(contract.read_text(encoding='utf-8-sig'))
     rules=config.get('rules',[])
@@ -63,6 +112,10 @@ def audit(workbook,contract):
             kind=rule['kind']
             if kind=='inventory':
                 checked+=inventory_check(wb[rule['sheet']],rule)
+            elif kind=='extraction_records':
+                checked+=extraction_records_check(wb,rule,contract.parent)
+            elif kind=='sampling':
+                checked+=sampling_check(wb[rule['sheet']],rule)
             elif kind=='source_records':
                 rows=json.loads((contract.parent/rule['json']).read_text(encoding='utf-8-sig'))
                 if not rows:raise ValueError('源记录为空')
