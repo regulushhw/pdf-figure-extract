@@ -17,6 +17,16 @@ class FakePage:
     def get_drawings(self): return self.items
 
 class Regression(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # unittest discovery imports the module without running the CLI setup.
+        global OUT
+        if 'OUT' not in globals():
+            temporary=tempfile.TemporaryDirectory(prefix='pdf_extract_discovery_')
+            OUT=Path(temporary.name)
+            cls.addClassCleanup(temporary.cleanup)
+            cls.addClassCleanup(lambda:globals().pop('OUT',None))
+
     def test_scan_short_paths_mixed_images_and_overlap_area(self):
         from scan_pages import scan_page,union_area
         doc=fitz.open();page=doc.new_page(width=200,height=200)

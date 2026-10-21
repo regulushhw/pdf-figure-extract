@@ -1,6 +1,6 @@
 {
   "scope": "synthetic_regression_only",
-  "tests": 77,
+  "tests": 93,
   "failures": 0,
   "errors": 0,
   "skipped": 0,
@@ -54,8 +54,16 @@
       "errors": 0,
       "skipped": 0,
       "run": "python -X utf8 -B tests/test_workbook_save.py"
+    },
+    "test_run_task": {
+      "tests": 16,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "run": "python -X utf8 -B tests/test_run_task.py (FIGURE_SAVE_INTEGRATION=1)"
     }
   },
   "workbook_save_integration": "Executed with FIGURE_SAVE_INTEGRATION=1, configured artifact runtime and PowerShell; synthetic workbook and image only.",
-  "limitations": "Does not certify extraction accuracy or speed on arbitrary papers; original-data and identity review remain required."
+  "limitations": "Does not certify extraction accuracy or speed on arbitrary papers; original-data and identity review remain required.",
+  "fixed_task_validation": "16 runner tests passed with configured save integration; original 23 legacy regressions also passed after unittest-discovery fixture initialization was corrected. Other existing suites passed in the full 93-test discovery run; its 13 legacy initialization errors were resolved by that targeted rerun."
 }

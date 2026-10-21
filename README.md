@@ -15,6 +15,10 @@
 
 ## 运行
 
+日常提取新增[固定任务入口](references/fixed_tasks.md)：`python tools/run_task.py task.json serve`。沿用下述提取、复核及保存工具，增加试读确认、结果缓存、过期输入拦截和简短输出；Windows持续运行时锁住现有工具脚本的写入与删除。旧命令仍可用于维护调试。
+
+第三方通过明确列映射接收UnPlotter、ChartDetective、WebPlotDigitizer的CSV导出，不复制其源码；目前只验证了合成导入契约，未声称自动操作过它们的界面或完成真实工具间精度比较。不访问网络、不调用模型、不增加付费API；入口日志统计脚本运行与缓存，不等于实际模型token计量。
+
 安装依赖见 `requirements.txt`。在调用方指定的工作目录运行：
 
 ```sh
