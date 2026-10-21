@@ -71,6 +71,25 @@ class WorkbookSaveTests(unittest.TestCase):
         errors,snapshot=self.mod['prepare_source'](1,p,path)
         self.assertEqual(errors[0][0],'source_changed');self.assertIsNone(snapshot)
         self.assertFalse(list(self.root.glob('*快照*')))
+    def test_prepare_creates_nested_backup_and_reuses_identical_copy(self):
+        p=copy.deepcopy(self.plan);p['backup']=str(self.root/'nested'/'backups'/'source.xlsx')
+        path=self.root/'A1_修改计划.json';path.write_text(json.dumps(p),encoding='utf-8')
+        errors,snapshot=self.mod['prepare_source'](1,p,path)
+        self.assertEqual(errors,[]);self.assertTrue(Path(snapshot).is_file())
+        self.assertEqual(self.sha(p['backup']),p['input_sha256'])
+        self.assertEqual(self.mod['prepare_source'](1,p,path)[0],[])
+
+    def test_backup_conflict_and_source_alias_are_not_overwritten(self):
+        for alias in (False,True):
+            p=copy.deepcopy(self.plan)
+            backup=self.source if alias else self.root/'backup.xlsx'
+            if not alias:backup.write_bytes(b'keep existing backup')
+            before=backup.read_bytes();p['backup']=str(backup)
+            path=self.root/'A1_修改计划.json';path.write_text(json.dumps(p),encoding='utf-8')
+            errors,snapshot=self.mod['prepare_source'](1,p,path)
+            self.assertEqual(errors[0][0],'backup_is_target' if alias else 'backup_conflict')
+            self.assertIsNone(snapshot);self.assertEqual(backup.read_bytes(),before)
+
     @unittest.skipUnless(os.environ.get('FIGURE_SAVE_INTEGRATION')=='1','requires configured Node/artifact runtime and PowerShell')
     def test_full_shared_pipeline_preserves_native_image_without_copied_scripts(self):
         node=os.environ.get('FIGURE_NODE') or shutil.which('node')

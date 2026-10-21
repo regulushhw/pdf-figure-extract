@@ -3,12 +3,13 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import numpy as np
 from PIL import Image,ImageDraw
 import fitz
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
-from complex_bars import analyze_bar,analyze_capped,run as bar_run
+from complex_bars import analyze_bar,analyze_capped,fill_bar_interiors,locate_group_slots,run as bar_run
 from complex_curves import track,shared_ink,run as curve_run
 from run_task import Runner,write,read
 
@@ -58,6 +59,95 @@ class GeometryTests(unittest.TestCase):
         roles,flags,_=analyze_bar(mask,self.spec(),90)
         self.assertEqual(roles['bar_tip'],[])
         self.assertIn('bar_body_missing_or_two_sided',flags)
+
+    def test_closed_outline_interior_supports_body_without_filling_background(self):
+        mask=np.zeros((140,130),dtype=bool)
+        mask[60:91,40]=True;mask[60:91,50]=True
+        mask[60,40:51]=True;mask[90,40:51]=True
+        filled=fill_bar_interiors(mask,10)
+        self.assertTrue(filled[70,45]);self.assertFalse(filled[70,30])
+        spec={**self.spec(),'range_expected':False}
+        roles,_,_=analyze_bar(mask,spec,90,filled)
+        self.assertEqual(roles['bar_tip'],[[45,60.]])
+        self.assertFalse(mask[70,45])
+
+    def test_open_outline_and_wide_plot_background_not_filled(self):
+        mask=np.zeros((140,130),dtype=bool)
+        mask[20:111,10]=True;mask[20:111,100]=True
+        mask[20,10:101]=True;mask[110,10:101]=True
+        filled=fill_bar_interiors(mask,10)
+        self.assertFalse(filled[70,45])
+        mask[60:91,40]=True;mask[60:91,50]=True;mask[90,40:51]=True
+        filled=fill_bar_interiors(mask,10)
+        self.assertFalse(filled[70,45])
+
+    def test_fill_width_must_be_explicit_and_bounded(self):
+        for width in (True,1,41,3.5):
+            with self.assertRaises(ValueError):fill_bar_interiors(np.zeros((10,10),dtype=bool),width)
+
+    def test_bar_only_near_edge_does_not_truncate_to_shorter_neighbour(self):
+        mask=np.zeros((140,130),dtype=bool)
+        mask[35:91,40:51]=True;mask[60:91,51:59]=True
+        spec={**self.spec(),'x':49,'roi':[45,10,53,130],'range_expected':False,'min_body_width':3}
+        roles,_,_=analyze_bar(mask,spec,90)
+        self.assertEqual(roles['bar_tip'],[[49,35.]])
+        # Range-bearing charts keep their separate symmetric stem rule.
+        roles,_,_=analyze_bar(mask,{**spec,'range_expected':True},90)
+        self.assertEqual(roles['bar_tip'],[[49,60.]])
+
+    def test_bar_only_negative_near_edge_reaches_actual_tip(self):
+        mask=np.zeros((140,130),dtype=bool)
+        mask[90:126,40:51]=True;mask[90:106,51:59]=True
+        roles,_,_=analyze_bar(mask,{**self.spec(),'x':49,'roi':[45,10,53,130],
+            'range_expected':False,'min_body_width':3},90)
+        self.assertEqual(roles['bar_tip'],[[49,125.]])
+
+    def grouped(self):
+        mask=np.zeros((140,130),dtype=bool)
+        mask[40:101,10:35]=True;mask[40:101,60:85]=True
+        panel={'bounds':[1,1,128,138],'zero_y':70}
+        spec={'left':5,'right':110,'groups':[['a0','a1','a2'],['b0','b1','b2']],
+              'within_group':'equal_width','min_group_width':20}
+        return mask,panel,spec
+
+    def test_group_slots_use_detected_spans_and_explicit_id_order(self):
+        mask,panel,spec=self.grouped();slots=locate_group_slots(mask,panel,spec)
+        self.assertEqual(list(slots),['a0','a1','a2','b0','b1','b2'])
+        self.assertEqual(slots['a0']['group_span'],[10,34])
+        self.assertAlmostEqual(slots['a0']['x'],13.667)
+        self.assertEqual(slots['a2']['group_span'],[10,34])
+
+    def test_group_count_or_width_mismatch_refused(self):
+        mask,panel,spec=self.grouped()
+        with self.assertRaises(ValueError):locate_group_slots(mask,panel,{**spec,'groups':[['one','two']]})
+        with self.assertRaises(ValueError):locate_group_slots(mask,panel,{**spec,'min_bar_width':10})
+
+    def test_group_membership_does_not_infer_equal_width_or_repeat_ids(self):
+        mask,panel,spec=self.grouped()
+        with self.assertRaises(ValueError):locate_group_slots(mask,panel,{**spec,'within_group':'guess'})
+        with self.assertRaises(ValueError):locate_group_slots(mask,panel,{**spec,'groups':[['a','a'],['b','c']]})
+
+    def test_grouped_run_reuses_mask_and_preserves_source_and_slots(self):
+        from propose_bitmap_points import select_pixels
+        from review_points import digest
+        mask,panel,layout=self.grouped()
+        mask[71:]=False
+        image=self.root/'groups.png';Image.fromarray(np.where(mask,0,255).astype('uint8')).convert('RGB').save(image)
+        before=digest(image)
+        panel.update(source='s',axis={'coordinate':'y','ticks':[[10,100],[130,0]],'unit':'%'})
+        bars=[{'id':ident,'panel':'p','identity':{'series':ident},'x':20,
+               'roi':[5,5,110,130],'range_expected':False,'min_body_width':3}
+              for group in layout['groups'] for ident in group]
+        job=self.root/'group_job.json';write(job,{'sources':{'s':{'image':str(image)}},
+            'panels':{'p':panel},'bars':bars,'fill_outline_max_width':8,
+            'bar_groups':[{**layout,'panel':'p'}]})
+        with patch('complex_bars.select_pixels',wraps=select_pixels) as select:
+            bar_run(job,self.root/'group_result');self.assertEqual(select.call_count,1)
+        result=read(self.root/'group_result/review_job.json')
+        self.assertEqual([i['id'] for i in result['items']],[b['id'] for b in bars])
+        self.assertTrue(all(i['roles']['bar_tip'][0][1]==40 for i in result['items']))
+        self.assertEqual(result['items'][-1]['complex_evidence']['slot_location']['previous_x'],20)
+        self.assertEqual(digest(image),before)
 
     def test_coincident_endpoint_not_invented(self):
         mask,_=self.mask();mask[10:60,:]=False

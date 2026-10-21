@@ -86,6 +86,21 @@ def preservation_errors(plan,book,source):
   if image_anchors(original)!=image_anchors(current):errors.append(['image_anchors',name])
  return errors
 
+def prepare_backup(plan,raw):
+ """Prepare the declared backup before expensive authoring; never overwrite it."""
+ backup=Path(plan['backup']).resolve()
+ if backup==Path(plan['target']).resolve():return [['backup_is_target',str(backup)]]
+ try:
+  backup.parent.mkdir(parents=True,exist_ok=True)
+  if backup.exists():
+   if hashlib.sha256(backup.read_bytes()).hexdigest()!=plan['input_sha256']:
+    return [['backup_conflict',str(backup)]]
+  else:
+   with backup.open('xb') as stream:stream.write(raw)
+ except OSError as exc:return [['backup_unavailable',str(backup),str(exc)]]
+ return []
+
+
 def prepare_source(paper,plan,plan_path):
  """Capture the preflight-passing original once; reuse only its matching snapshot."""
  plan_bytes=plan_path.read_bytes();raw=Path(plan['target']).read_bytes()
@@ -101,7 +116,11 @@ def prepare_source(paper,plan,plan_path):
   snapshot=Path(plan['source_snapshot'])
   if not snapshot.is_file() or hashlib.sha256(snapshot.read_bytes()).hexdigest()!=plan['input_sha256']:
    return [['source_snapshot_invalid','Existing snapshot is missing or changed; rebuild the plan from the correct original.']],None
+  errors=prepare_backup(plan,raw)
+  if errors:return errors,None
   return [],str(snapshot)
+ errors=prepare_backup(plan,raw)
+ if errors:return errors,None
  snapshot=W/f'A{paper}_原件快照_{uuid.uuid4().hex}.xlsx'
  with snapshot.open('xb') as stream:stream.write(raw)
  plan['source_snapshot']=str(snapshot)
