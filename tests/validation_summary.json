@@ -1,6 +1,6 @@
 {
   "scope": "synthetic_regression_only",
-  "tests": 93,
+  "tests": 158,
   "failures": 0,
   "errors": 0,
   "skipped": 0,
@@ -55,15 +55,55 @@
       "skipped": 0,
       "run": "python -X utf8 -B tests/test_workbook_save.py"
     },
+    "test_point_editing": {
+      "tests": 13,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "run": "python -X utf8 -B tests/test_point_editing.py (all13 final cases passed together)"
+    },
+    "test_complex_geometry": {
+      "tests": 17,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "run": "python -X utf8 -B tests/test_complex_geometry.py"
+    },
+    "test_ocr_assist": {
+      "tests": 15,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "run": "python -X utf8 -B tests/test_ocr_assist.py (FIGURE_OCR_INTEGRATION=1)"
+    },
+    "test_prepare_task": {
+      "tests": 11,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "run": "python -X utf8 -B tests/test_prepare_task.py"
+    },
     "test_run_task": {
       "tests": 16,
       "failures": 0,
       "errors": 0,
       "skipped": 0,
       "run": "python -X utf8 -B tests/test_run_task.py (FIGURE_SAVE_INTEGRATION=1)"
+    },
+    "test_object_review": {
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "run": "python -X utf8 -B tests/test_object_review.py"
     }
   },
   "workbook_save_integration": "Executed with FIGURE_SAVE_INTEGRATION=1, configured artifact runtime and PowerShell; synthetic workbook and image only.",
-  "limitations": "Does not certify extraction accuracy or speed on arbitrary papers; original-data and identity review remain required.",
-  "fixed_task_validation": "16 runner tests passed with configured save integration; original 23 legacy regressions also passed after unittest-discovery fixture initialization was corrected. Other existing suites passed in the full 93-test discovery run; its 13 legacy initialization errors were resolved by that targeted rerun."
+  "limitations": "Does not certify extraction accuracy or speed on arbitrary papers. Total aggregates previously recorded149 tests and9 new object-review tests; not a new full-suite execution. Current related regressions: editor13, review16, runner15 passed; optional workbook save integration skipped in this run.",
+  "point_edit_validation": "13 new editor cases verified; existing review16 passed and runner15 passed with1 save-integration skip. Real A2 scratch worker performed move/delete/add/reassign in one batch and undo with extraction count remaining1; all40 original point projections restored. In-process edit and local preview measured about0.52s, undo about0.51s; excludes model/transport time. No research workbook edits.",
+  "complex_geometry_validation": "17 synthetic tests passed. Existing runner regression: 15 passed, 1 save-integration test skipped this run (earlier configured integration result retained separately). Real A2 trials emit unreviewed proposals only; bar/range pairing remains incomplete, figure11 covers five of thirteen plotted groups. Same 74-point figure6 comparison: 64 within2px, 2 missing, 44 flagged; all30 unflagged agree with prior self-check. Not independent accuracy, and not a reason to replace the old default method. No research workbook edits.",
+  "task_preparation_validation": "11 preparation tests passed again after OCR integration; no research workbook edited. Automatic legend interpretation is not included.",
+  "ocr_calibration_validation": "15 tests passed including real local Windows OCR (English), source-coordinate transforms, scan-only PDF asset routing, TSV parsing, confirmation/correction checks and task configuration merge. Tesseract runtime, Chinese accuracy, nonlinear axes and arbitrary deskew are not certified.",
+  "fixed_task_validation": "16 runner tests passed with configured save integration; original 23 legacy regressions also passed after unittest-discovery fixture initialization was corrected. Other existing suites passed in the full 93-test discovery run; its 13 legacy initialization errors were resolved by that targeted rerun.",
+  "object_review_validation": "9 synthetic tests passed: full-object/focused observation, full-ROI fallback, blank templates, axis-only correction, explicit missing, stale sources, candidate reuse and undo. Real A2 workflow replay:16 endpoint slots,15 reproduce prior same-agent manual approximate values and1 remains missing; no detector executed, research workbook unchanged. Two review-image areas reduced37.5%/38.3%; not model-token or end-to-end-time savings. No new semantic endpoint accuracy established."
 }

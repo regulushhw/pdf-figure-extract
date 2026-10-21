@@ -148,7 +148,8 @@ def load_result(job_path, job, sources, panels, resume=None):
         if old["job_sha256"] != result["job_sha256"] or old["sources"] != sources:
             raise ValueError("resume source/job changed; regenerate the review batch")
         expected = [(x["id"], x["panel"], x["identity"], list(x["roles"])) for x in result["items"]]
-        actual = [(x["id"], x["panel"], x["identity"], list(x["roles"])) for x in old["items"]]
+        actual = [(x["id"], x["panel"], x.get("original_identity",x["identity"]), list(x["roles"]))
+                  for x in old["items"] if not x.get("added_by_edit")]
         if expected != actual:
             raise ValueError("resume inventory/identity mismatch")
         result = old
@@ -177,12 +178,12 @@ def font(size):
     return ImageFont.load_default()
 
 
-def render_sheet(items, sources, panels, path, zoom=3, columns=3, context=False):
+def render_sheet(items, sources, panels, path, zoom=3, columns=3, context=False, image_cache=None):
     """Unmarked ink on left; candidate overlay on right, with source-pixel rulers."""
     tile_w = max(330, max((i["roi"][2] - i["roi"][0]) * zoom * 2 + 90 for i in items))
     tile_h = max((i["roi"][3] - i["roi"][1]) * zoom + 110 for i in items)
     width = tile_w * min(columns, len(items))
-    images = {}
+    images = {} if image_cache is None else image_cache
     context_rows = []
     if context:
         for panel_id in dict.fromkeys(i['panel'] for i in items):
@@ -248,7 +249,8 @@ def render_sheet(items, sources, panels, path, zoom=3, columns=3, context=False)
             sy = raw_origin[1] + (y - y0) * zoom + center_offset
             draw.text((ox + 2, sy - 6), str(y), font=font(11), fill="black")
             draw.line((raw_origin[0] - 3, sy, raw_origin[0] - 1, sy), fill="black")
-        for x in range(math.ceil(x0 / 10) * 10, x1 + 1, 10):
+        x_step=max(10,math.ceil(40/zoom/10)*10)
+        for x in range(math.ceil(x0 / x_step) * x_step, x1 + 1, x_step):
             sx = raw_origin[0] + (x - x0) * zoom + center_offset
             draw.text((sx - 8, raw_origin[1] + crop.height + 2), str(x), font=font(10), fill="black")
         ax = marked_origin[0] + (item["anchor"][0] - x0) * zoom + center_offset
@@ -261,7 +263,8 @@ def render_sheet(items, sources, panels, path, zoom=3, columns=3, context=False)
                 py = marked_origin[1] + (p[1] - y0) * zoom + center_offset
                 color = colors[ri % len(colors)]
                 draw.line((px - 5, py, px + 5, py), fill=color, width=2)
-                draw.text((px + 7, py - 7), f"{role[0]}{ci}", font=font(11), fill=color)
+                label = item.get('role_labels', {}).get(role, f"{role[0]}{ci}")
+                draw.text((px + 7, py - 7), label, font=font(11), fill=color)
         draw.rectangle((ox, oy, ox + tile_w - 1, oy + tile_h - 1), outline=(180, 180, 180))
         placements[item["id"]] = {"sheet": path.name, "source_roi": item["roi"],
                                     "raw_origin": raw_origin, "marked_origin": marked_origin,
@@ -326,6 +329,7 @@ def prepare(job_path, out_dir, limit=6, offset=0, resume=None, sample_every=20, 
             reasons.append("automatic_sample")
         if reasons:
             card = {**copy.deepcopy(item), "review_reasons": reasons,
+                    "identity":copy.deepcopy(lookup[item['id']]['identity']),
                     "review_state": {name: r["status"] for name, r in roles.items()}}
             # Show saved corrections when another role of the same object is
             # still being inspected; do not redraw the superseded proposal.
@@ -392,7 +396,7 @@ def apply(manifest_path, decisions_path, output_path, resume=None):
         raise ValueError("decisions must be nonempty and target this batch_id")
     if reviewer.get("kind") not in ("agent", "human") or not reviewer.get("name"):
         raise ValueError("explicit reviewer kind/name required")
-    if any(h["batch_id"] == batch_id for h in result["history"]):
+    if any(h.get("batch_id") == batch_id for h in result["history"]):
         raise ValueError("batch already applied; regenerate before changing decisions")
     cards = {i["id"]: i for i in manifest["items"]}
     records = {i["id"]: i for i in result["items"]}
@@ -470,6 +474,210 @@ def apply(manifest_path, decisions_path, output_path, resume=None):
     result["last_check_images"] = overlay_paths
     write_json(out, result)
     return {"output": str(out), "summary": result["summary"], "check_images": overlay_paths}
+
+
+def point_location(item, role):
+    state=item['roles'][role]
+    return state['pixel'] or (state.get('review') or {}).get('previous',{}).get('pixel') or item['anchor']
+
+
+def inspect_points(result, folder, revision, refs=None, regions=None, image_cache=None, ghosts=(), view_mode='points'):
+    """Compact source/overlay cards; one resident image cache for all edits."""
+    folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
+    records={i['id']:i for i in result['items']}
+    lookup={**{i['id']:i for i in ghosts},**records}
+    if refs is None:
+        refs=[{'id':i['id'],'role':role} for i in result['items'] for role,state in i['roles'].items()
+              if state['status']=='needs_review' or (i.get('flags') and state['status']!='reviewed')][:6]
+        if not refs:refs=[{'id':i['id'],'role':role} for i in result['items'] for role in i['roles']][:6]
+    if len(refs)>12:raise ValueError('inspect at most12 point-role references per readable batch')
+    if len({(r['id'],r['role']) for r in refs})!=len(refs):raise ValueError('duplicate point-role reference')
+    if view_mode not in ('points','objects','objects_full'):raise ValueError('unknown fixed view mode')
+    cards=[];views=[]
+    for ref in refs:
+        record=lookup[ref['id']];role=ref['role'];p=point_location(record,role)
+        bounds=result['panels'][record['panel']]['bounds']
+        box=[max(int(bounds[0]),math.floor(p[0]-28)),max(int(bounds[1]),math.floor(p[1]-22)),
+             min(int(bounds[2]),math.ceil(p[0]+28)),min(int(bounds[3]),math.ceil(p[1]+22))]
+        pixel=record['roles'][role]['pixel'] if record['id'] in records else None
+        cards.append({**copy.deepcopy(record),'id':f'{record["id"]}::{role}','roi':box,
+                      'anchor':p,'roles':{role:[pixel] if pixel else []}})
+        views.append({'id':record['id'],'role':role,'panel':record['panel'],'bounds':box})
+    # Object strips keep all selected endpoints and their full existing ROIs
+    # together. Nothing here infers a month, series, cap or missing endpoint.
+    if view_mode in ('objects','objects_full'):
+        if regions or ghosts:raise ValueError('object views do not combine regions/undo ghosts; use point views')
+        grouped={}
+        for ref in refs:grouped.setdefault(lookup[ref['id']]['panel'],[]).append(ref)
+        cards=[];views=[]
+        for panel_id,group in grouped.items():
+            panel=result['panels'][panel_id];bounds=panel['bounds']
+            members=[lookup[r['id']] for r in group]
+            box=[max(math.ceil(bounds[0]),min(i['roi'][0] for i in members)-6),
+                 max(math.ceil(bounds[1]),min(i['roi'][1] for i in members)),
+                 min(math.floor(bounds[2]),max(i['roi'][2] for i in members)+6),
+                 min(math.floor(bounds[3]),max(i['roi'][3] for i in members))]
+            full_box=list(box)
+            if view_mode=='objects':
+                source_id=panel['source']
+                cache={} if image_cache is None else image_cache
+                if source_id not in cache:
+                    with Image.open(result['sources'][source_id]['image']) as im:cache[source_id]=im.convert('RGB')
+                rows=set()
+                for item in members:
+                    l,t,r,b=item['roi']
+                    # Existing ROI ink is a display hint, not endpoint identity.
+                    ink=np.asarray(cache[source_id].crop((l,t,r+1,b+1)).convert('L'))<200
+                    active=np.any(ink,axis=1)
+                    edges=np.diff(np.r_[False,active,False].astype(int))
+                    for a,z in zip(np.flatnonzero(edges==1),np.flatnonzero(edges==-1)):
+                        if z-a>=4:rows.update((t+int(a),t+int(z)-1))
+                    for state in item['roles'].values():
+                        if state['pixel']:rows.add(state['pixel'][1])
+                if rows:
+                    box[1]=max(box[1],math.floor(min(rows))-16)
+                    box[3]=min(box[3],math.ceil(max(rows))+16)
+            # Each image stays readable without shrinking the original ink.
+            if box[2]-box[0]>240 or box[3]-box[1]>1800:
+                raise ValueError('object view too large; select a smaller existing object ROI')
+            roles={};labels={}
+            for n,ref in enumerate(group,1):
+                record=lookup[ref['id']];state=record['roles'][ref['role']]
+                key=f'p{n}';roles[key]=[state['pixel']] if state['pixel'] else []
+                labels[key]=str(n)
+                views.append({'id':ref['id'],'role':ref['role'],'panel':panel_id,'bounds':box,
+                              'full_bounds':full_box,'label':n,'focus_is_heuristic':view_mode=='objects'})
+            cards.append({'id':f'{panel_id}: '+('ink focus' if view_mode=='objects' else 'full object'),'panel':panel_id,
+                'identity':{'roles':len(group),'scope':'objects_full shows original ROI; identity not inferred'},
+                'roi':box,'anchor':members[0]['anchor'],'roles':roles,'role_labels':labels})
+    for n,region in enumerate(regions or []):
+        panel=result['panels'][region['panel']];box=list(map(int,region['bounds']))
+        if len(box)!=4 or not inside(box[:2],panel['bounds']) or not inside(box[2:],panel['bounds']) or not(box[0]<box[2] and box[1]<box[3]):
+            raise ValueError('region outside panel')
+        if box[2]-box[0]>180 or box[3]-box[1]>180:raise ValueError('use a local region up to180 source pixels per side')
+        cards.append({'id':f'region{n}','panel':region['panel'],'identity':{'region':'for add/move'},
+                      'roi':box,'anchor':[(box[0]+box[2])/2,(box[1]+box[3])/2],'roles':{}})
+        views.append({'id':None,'role':None,'panel':region['panel'],'bounds':box})
+    if not cards or len(cards)>12:raise ValueError('provide1..12 local views')
+    image=folder/'local_check.png'
+    image_paths=[]
+    if view_mode in ('objects','objects_full'):
+        # One panel per image, including native-resolution sources. At least
+        # 1:1 pixels; enlarge narrow scans only while height remains readable.
+        for n,card in enumerate(cards):
+            image=folder/f'object_{n}.png'
+            zoom=max(1,min(3,1400//(card['roi'][3]-card['roi'][1]+1)))
+            source=result['sources'][result['panels'][card['panel']]['source']]
+            if max(source['size'])>2400:zoom=1
+            render_sheet([card],result['sources'],result['panels'],image,zoom=zoom,columns=1,image_cache=image_cache)
+            image_paths.append(str(image))
+    else:
+        render_sheet(cards,result['sources'],result['panels'],image,zoom=3,columns=2,image_cache=image_cache)
+        image_paths.append(str(image))
+    manifest={'version':1,'revision':revision,'job_sha256':result['job_sha256'],
+              'images':{p:digest(p) for p in image_paths},'views':views,'view_mode':view_mode}
+    write_json(folder/'view.json',manifest)
+    states=[]
+    for ref in refs:
+        record=lookup[ref['id']];active=ref['id'] in records
+        role=record['roles'][ref['role']]
+        states.append({'id':ref['id'],'role':ref['role'],'pixel':role['pixel'] if active else None,
+                       'value':role['value'] if active else None,'active':active,
+                       'label':next((v.get('label') for v in views if v['id']==ref['id'] and v['role']==ref['role']),None),
+                       'identity':{k:v for k,v in record['identity'].items()
+                                   if k in ('series','scenario','model','period','month')}})
+    # A deliberately non-executable template: blank positions and viewed=false
+    # require an actual observation, never silently accept the proposal values.
+    template={'base_revision':revision,'images':manifest['images'],'viewed':False,'note':'',
+              'ops':[{'op':'set_axis','id':r['id'],'role':r['role'],'position':None} for r in refs]}
+    write_json(folder/'decision_template.json',template)
+    write_json(folder/'points.json',states)
+    return {'view':str(folder/'view.json'),'images':image_paths,'image_hashes':manifest['images'],
+            'revision':revision,'views':views,'points':states,
+            'decision_template':str(folder/'decision_template.json')}
+
+
+def edit_points(result, request, observation):
+    """Atomic data edits shared by all bitmap detectors; caller persists once."""
+    if request.get('viewed') is not True or not request.get('note','').strip():
+        raise ValueError('current local image must be viewed; supply a note')
+    if (request.get('images')!=observation['images'] or observation['job_sha256']!=result['job_sha256']
+            or any(digest(p)!=h for p,h in observation['images'].items())):
+        raise ValueError('current local view image hashes required')
+    operations=request.get('ops',[])
+    if not operations or len(operations)>12:raise ValueError('provide1..12 fixed point operations per local batch')
+    updated=copy.deepcopy(result);records={i['id']:i for i in updated['items']}
+    affected=[];events=[];ghosts=[]
+    shown={(v['id'],v['role']) for v in observation['views']}
+    def visible(panel,p):
+        return any(v['panel']==panel and inside(p,v['bounds']) for v in observation['views'])
+    for op in operations:
+        kind=op['op'];ident=op['id'];role=op.get('role','value')
+        if not isinstance(ident,str) or not ident.strip() or not isinstance(role,str) or not role.strip():
+            raise ValueError('stable nonempty string ID and role required')
+        note=op.get('note',request['note'])
+        if not note.strip():raise ValueError('operation reason required')
+        if kind not in ('move','delete','add','reassign','accept','set_axis'):raise ValueError('unknown point operation')
+        old=copy.deepcopy(records.get(ident))
+        if kind=='add' and ident not in records:
+            panel=op['panel'];p=pair(op['pixel'])
+            if not visible(panel,p) or not inside(p,updated['panels'][panel]['bounds']):
+                raise ValueError('new point must be inside a shown panel region')
+            if not op.get('identity'):raise ValueError('new point requires explicit identity')
+            record={'id':ident,'panel':panel,'identity':op['identity'],'roi':updated['panels'][panel]['bounds'],
+                    'anchor':p,'roles':{},'flags':[],'added_by_edit':True}
+            records[ident]=record;updated['items'].append(record)
+        else:
+            if ident not in records or role not in records[ident]['roles']:raise ValueError('unknown point/role')
+            if (ident,role) not in shown:raise ValueError('point-role not shown in current view')
+            record=records[ident]
+        prior=copy.deepcopy(record['roles'].get(role))
+        if kind=='add' and prior and prior['pixel'] is not None:
+            raise ValueError('point already exists; use move rather than add')
+        previous={k:prior[k] for k in ('pixel','value','status')} if prior else None
+        if kind=='delete':
+            if record.get('added_by_edit') and len(record['roles'])==1:
+                updated['items'].remove(record);del records[ident];ghosts.append(record)
+            else:
+                record['roles'][role]={'pixel':None,'value':None,'status':'explicit_missing','method':'point_deleted',
+                    'review':{'note':note,'previous':previous,'evidence_scope':'visual self-check; not independent validation'}}
+        else:
+            if kind=='reassign':
+                if len(record['roles'])!=1:raise ValueError('reassign whole multi-role objects explicitly outside point editing')
+                if not op.get('series','').strip():raise ValueError('explicit series name required')
+                record.setdefault('original_identity',copy.deepcopy(record['identity']))
+                record['identity']['series']=op['series']
+                p=prior['pixel']
+                if p is None:raise ValueError('cannot reassign a missing point; add or move it first')
+            elif kind=='accept':
+                p=prior['pixel']
+                if p is None:raise ValueError('missing point cannot be accepted')
+            else:
+                if kind=='set_axis':
+                    pos=op.get('position')
+                    if isinstance(pos,bool) or not isinstance(pos,(int,float)) or not math.isfinite(pos):
+                        raise ValueError('set_axis needs a finite numeric source-pixel position')
+                    # Retain the other coordinate from the current point or
+                    # explicit object anchor. This is not geometric detection.
+                    p=list(prior['pixel'] or record['anchor'])
+                    axis=updated['panels'][record['panel']]['calibration']['coordinate']
+                    p[0 if axis=='x' else 1]=float(pos)
+                else:p=pair(op['pixel'])
+                if not visible(record['panel'],p) or not inside(p,updated['panels'][record['panel']]['bounds']):
+                    raise ValueError('edit target outside current shown regions; inspect destination first')
+            # ROI can expand after a shown correction; stable ID and original
+            # sampling inventory remain. The original job is never rewritten.
+            record['roi']=[min(record['roi'][0],math.floor(p[0])),min(record['roi'][1],math.floor(p[1])),
+                           max(record['roi'][2],math.ceil(p[0])),max(record['roi'][3],math.ceil(p[1]))]
+            record['roles'][role]={'pixel':p,'value':value_at(p,updated['panels'][record['panel']]['calibration']),
+                'status':'reviewed','method':f'point_{kind}',
+                'review':{'note':note,'previous':previous,'evidence_scope':'visual self-check; not independent validation'}}
+        affected.append({'id':ident,'role':role})
+        events.append({'op':kind,'id':ident,'role':role,'before':previous,
+                       'previous_identity':old['identity'] if old else None,'note':note})
+    updated['history'].append({'kind':'point_edits','note':request['note'],'events':events})
+    updated['summary']=summary(updated)
+    return updated,list({(r['id'],r['role']):(r) for r in affected}.values()),ghosts
 
 
 def main():

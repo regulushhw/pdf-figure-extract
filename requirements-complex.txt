@@ -1,0 +1,2 @@
+# Optional: only the complex bitmap bar/stem/cap detector needs OpenCV.
+opencv-python-headless>=4.8

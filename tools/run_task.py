@@ -23,10 +23,12 @@ TOOLS = Path(__file__).resolve().parent
 REPO = TOOLS.parent
 EXTRACTORS = {'vector_bars': 'extract_bars.py', 'vector_lines': 'extract_lines.py',
               'vector_points': 'extract_points.py', 'vector_dashes': 'extract_dashes.py',
-              'bitmap_points': 'propose_bitmap_points.py', 'bitmap_lines': 'auto_trace_bitmap.py'}
+              'bitmap_points': 'propose_bitmap_points.py', 'bitmap_lines': 'auto_trace_bitmap.py',
+              'bitmap_bar_ranges': 'complex_bars.py', 'bitmap_curve_identity': 'complex_curves.py'}
 EXTERNAL = {'unplotter_csv', 'chartdetective_csv', 'webplotdigitizer_csv'}
-METHODS = set(EXTRACTORS) | EXTERNAL
-ACTIONS = {'status', 'scan', 'trial', 'approve', 'run', 'review', 'apply', 'accept', 'draft', 'save', 'verify'}
+METHODS = set(EXTRACTORS) | EXTERNAL | {'review_candidates'}
+ACTIONS = {'status', 'scan', 'trial', 'approve', 'run', 'inspect', 'edit', 'undo',
+           'review', 'apply', 'accept', 'draft', 'save', 'verify'}
 
 
 def read(path):
@@ -189,7 +191,27 @@ class Runner:
         folder.mkdir(parents=True)
         job['prefix'] = str(folder / 'data')
         write(folder / 'job.json', job)
-        if method in EXTERNAL:
+        if method=='review_candidates':
+            # Import the existing candidate contract, never rerun an extractor
+            # or inherit somebody else's reviewed/accepted status.
+            from review_points import load_job
+            from PIL import Image,ImageDraw
+            candidate_folder=folder/'candidates';candidate_folder.mkdir()
+            candidate=candidate_folder/'review_job.json';write(candidate,job)
+            _,_,sources,panels=load_job(candidate)
+            for n,(source_id,src) in enumerate(sources.items()):
+                with Image.open(src['image']) as image:overview=image.convert('RGB')
+                draw=ImageDraw.Draw(overview)
+                for item in job['items']:
+                    if panels[item['panel']]['source']==source_id:
+                        draw.rectangle(item['roi'],outline='red',width=2)
+                overview.thumbnail((1100,1100))
+                overview.save(folder/f'candidate_overview_{n}.png')
+            write(folder/'import_summary.json',{'method':'review_candidates','items':len(job['items']),
+                'roles':sum(len(i['roles']) for i in job['items']),
+                'status':'unreviewed_candidates','extractor_executed':False,
+                'note':'Overview locates imported objects; inspect original pixels before editing.'})
+        elif method in EXTERNAL:
             if set(job['columns']['series']) != set(part['scope']['series']):
                 raise ValueError('external series columns must cover declared scope exactly')
             self.import_csv(job, folder)
@@ -198,7 +220,7 @@ class Runner:
         else:
             self.command(EXTRACTORS[method], [folder / 'job.json', folder / 'candidates'], folder)
         files = {str(p): sha(p) for p in folder.rglob('*') if p.is_file()}
-        images = [p for p in files if p.endswith('.png') and any(s in Path(p).name for s in ['check', 'overlay'])]
+        images = [p for p in files if p.endswith('.png') and any(s in Path(p).name for s in ['check', 'overlay','overview'])]
         record = {'fingerprint': key, 'folder': str(folder), 'files': files, 'images': images,
                   'inputs': inputs, 'status': 'unreviewed_candidates'}
         self.state['cache'][key] = record
@@ -344,7 +366,60 @@ class Runner:
         return {'status': 'saved_checks_passed' if action == 'save' else 'declared_checks_passed',
                 'workbook': str(target), 'images': list(map(str, folder.glob('A*_preview_*.png')))}
 
-    def execute(self, action, part_id=None, decision=None, batch=None):
+    def point_action(self,action,part,record,job,decision,batch,points,regions,view_mode='points'):
+        from review_points import load_job,load_result,summary,inspect_points,edit_points
+        start=time.perf_counter();state=self.state['parts'][part['id']]
+        prior=state.get('result')
+        if prior:self.checked_result(prior)
+        jp,j,sources,panels=load_job(job)
+        result=load_result(jp,j,sources,panels,prior['file'] if prior else None)
+        revision=prior['sha256'] if prior else digest(result)
+        if not hasattr(self,'_point_images'):self._point_images={}
+        images=self._point_images.setdefault(part['id'],{})
+        ghosts=[];undo_frame=None
+        if action=='inspect':
+            affected=points
+        else:
+            request=read(self.path(decision))
+            if request.get('base_revision')!=revision or not request.get('note','').strip():
+                raise ValueError('current base_revision and operation note required')
+            if action=='undo':
+                frames=state.get('point_undo',[])
+                if not frames:raise ValueError('no point edit to undo')
+                undo_frame=frames[-1];affected=undo_frame['affected']
+                ghosts=[copy.deepcopy(i) for i in result['items'] if any(r['id']==i['id'] for r in affected)]
+                previous=undo_frame['previous']
+                if previous:self.checked_result(previous)
+                result=load_result(jp,j,sources,panels,previous['file'] if previous else None)
+                result['history'].append({'kind':'undo_point_edit','reverted_revision':revision,'note':request['note']})
+                result['summary']=summary(result)
+            else:
+                observation_path=self.path(batch)
+                if not inside(observation_path,self.output(f'point_views/{part["id"]}')):
+                    raise ValueError('view must belong to this part')
+                observation=read(observation_path)
+                if observation['revision']!=revision:raise ValueError('view is stale; inspect current revision')
+                result,affected,ghosts=edit_points(result,request,observation)
+                view_mode=observation.get('view_mode','points')
+            target=self.output(f'results/{part["id"]}_{time.time_ns()}.json');target.parent.mkdir(exist_ok=True)
+            write(target,result);revision=sha(target)
+        render_start=time.perf_counter()
+        folder=self.output(f'point_views/{part["id"]}/{time.time_ns()}')
+        view=inspect_points(result,folder,revision,affected,regions,images,ghosts,view_mode)
+        render_seconds=time.perf_counter()-render_start
+        if action!='inspect':
+            if action=='undo':state['point_undo'].pop()
+            else:state.setdefault('point_undo',[]).append({'previous':prior,'affected':affected})
+            state['result']={'file':str(target),'sha256':revision}
+            state.pop('pending_review',None);state.pop('run_approval',None)
+            original=state.setdefault('original_check_images',list(record['images']))
+            record['images']=original+view['images']
+            for p in view['images']:record['files'][p]=sha(p)
+        return {**view,'summary':summary(result),'operation_seconds':round(time.perf_counter()-start,4),
+                'render_seconds':round(render_seconds,4),'extraction_executions':self.state['executions'],
+                'result':state.get('result'),'scope':'point data edited; no extraction rerun or workbook write'}
+
+    def execute(self, action, part_id=None, decision=None, batch=None, points=None, regions=None, view_mode='points'):
         if action not in ACTIONS:
             raise ValueError('unknown action; arbitrary execution forbidden')
         if action == 'status':
@@ -377,6 +452,8 @@ class Runner:
         job = Path(record['folder']) / 'candidates/review_job.json'
         if not job.exists():
             raise ValueError('review/apply supported for bitmap review jobs; vector/export uses accept attestation')
+        if action in ('inspect','edit','undo'):
+            return self.point_action(action,part,record,job,decision,batch,points,regions,view_mode)
         from review_points import prepare, apply
         result_record = state.get('result')
         if result_record:
@@ -397,6 +474,9 @@ class Runner:
         target = self.output(f'results/{part_id}_{time.time_ns()}.json'); target.parent.mkdir(exist_ok=True)
         result = apply(manifest, self.path(decision), target, resume=resume)
         state['result'] = {'file': str(target), 'sha256': sha(target)}
+        # A legacy apply is outside the fast editor's transaction stack.
+        # Do not let a later undo silently revert that unrelated operation.
+        state.pop('point_undo',None)
         state.pop('pending_review', None)
         # Acceptance must cover the latest corrected overlay, not just original candidates.
         for im in result['check_images']:
@@ -409,9 +489,14 @@ class Runner:
         try:
             if digest({str(p.relative_to(TOOLS)):sha(p) for p in code_files()}) != self.state['tools']:
                 raise ValueError('tool code changed during session; maintenance requires a new task')
-            if set(request) - {'action', 'part', 'decision', 'batch'}:
-                raise ValueError('only fixed action/part/decision/batch fields permitted')
-            result = self.execute(request['action'], request.get('part'), request.get('decision'), request.get('batch'))
+            if set(request) - {'action', 'part', 'decision', 'batch', 'points', 'regions','view_mode'}:
+                raise ValueError('only fixed action/part/decision/batch/points/regions/view_mode fields permitted')
+            if request.get('view_mode','points') not in ('points','objects','objects_full'):
+                raise ValueError('view_mode must be points, objects or objects_full')
+            if 'view_mode' in request and request['action'] not in ('inspect','edit'):
+                raise ValueError('view_mode is only supported for inspect/edit')
+            result = self.execute(request['action'], request.get('part'), request.get('decision'), request.get('batch'),
+                                  request.get('points'),request.get('regions'),request.get('view_mode','points'))
             write(self.state_path, self.state)
             # Keep stdout compact; full state/records remain on disk.
             if request['action'] == 'status':

@@ -6,6 +6,8 @@
 
 ## 当前支持与限制
 
+- 新增试验性的复杂位图柱/区间与曲线身份候选模块，固定方法`bitmap_bar_ranges`、`bitmap_curve_identity`；复用原复核接口。图10真实试验仍有缺口，图11仅试读5/13个系列组，不宣称整图可靠提取。输入、可选OpenCV依赖和验证边界见[复杂图元模块](references/complex_geometry.md)。
+
 - 折线可用显式颜色、线宽与线型绑定同色系列；网格束拒绝、面板边框排除。单条填充四边形虚线另有专用读取器，仍须显式选择；线型不能自动证明情景身份。
 - 盘点PDF候选对象；读取部分矢量柱图、直线段曲线和对称点标记。`scan_pages`区分全部`drawing_count`与筛选后的`long_paths`，报告位图原始尺寸、显示分辨率估计和覆盖率；空长路径清单不表示无矢量，页面有位图也不能排除混合图。数字附近的控制字符会提示回看印刷符号，不自动改负号。显示分辨率按轴对齐包围框估计，旋转/变形图片只作参考。
 - 自动标定目前限等距线性刻度；对数轴、Bezier路径、堆叠/浮动柱和复杂位图需另用方法。
@@ -15,7 +17,11 @@
 
 ## 运行
 
-日常提取新增[固定任务入口](references/fixed_tasks.md)：`python tools/run_task.py task.json serve`。沿用下述提取、复核及保存工具，增加试读确认、结果缓存、过期输入拦截和简短输出；Windows持续运行时锁住现有工具脚本的写入与删除。旧命令仍可用于维护调试。
+只有PDF时：`python tools/prepare_task.py paper.pdf`准备图像、图表候选和正文定位；configure生成关键参数模板，trial一次编译并调用已有提取模块。重复输入复用缓存，旧配置可显式导入；见[任务生成器](references/task_preparation.md)。扫描图按需调用ocr/ocr-apply，复用本机Windows OCR或已配置Tesseract，识别结果带原图坐标，确认后回填线性标定；见[文字识别与标定辅助](references/ocr_calibration.md)。不自动解释图例身份。
+
+日常只走[固定入口](references/fixed_tasks.md)：`python tools/run_task.py task.json serve`，提取一次后通过inspect/edit/undo批量移动、删除、补点和换系列，只刷新局部图，再统一确认/保存。所有位图模块共用同一结果版本和纠错层。旧review/apply和下述直接脚本保留作历史兼容或维护接口。Windows持续运行时锁住现有工具脚本的写入与删除。
+
+已有候选可用`review_candidates`直接接续。区间/柱组用inspect的`view_mode=objects`自动合并所选图元ROI，生成原图、坐标尺、端点编号和空白决定模板；Agent看图后只填源像素位置（`set_axis`）或缺失原因，程序换算、回叠、留版本。无需临时编写裁图与逐格换算脚本。复杂图元身份及遮挡仍需视觉判断，不能把流程固化当作自动识别正确率证明。
 
 第三方通过明确列映射接收UnPlotter、ChartDetective、WebPlotDigitizer的CSV导出，不复制其源码；目前只验证了合成导入契约，未声称自动操作过它们的界面或完成真实工具间精度比较。不访问网络、不调用模型、不增加付费API；入口日志统计脚本运行与缓存，不等于实际模型token计量。
 
