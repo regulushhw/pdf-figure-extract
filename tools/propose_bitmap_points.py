@@ -37,6 +37,34 @@ def runs(mask,x,top,bottom):
     return [[int(g[0]),int(g[-1])] for g in groups]
 
 
+def locate_bar_groups(mask, *, row, left, right, expected_count, min_width=8):
+    """Find actual horizontal ink spans at an explicitly checked bar-foot row.
+
+    For grouped solid bars with a visible common foot only. Inclusive source
+    pixels; no equal-spacing assumption, identity assignment or missing fill.
+    The caller excludes axes/grid/legend and verifies splitting within groups.
+    A count mismatch fails before generating a full set of point candidates.
+    """
+    mask=np.asarray(mask)
+    if mask.ndim!=2 or mask.dtype!=np.bool_:
+        raise ValueError('bar-group mask must be a 2D boolean array')
+    values=(row,left,right,expected_count,min_width)
+    if any(type(v) is not int for v in values):
+        raise ValueError('bar-group bounds and counts must be integers')
+    if not (0<=row<mask.shape[0] and 0<=left<=right<mask.shape[1]
+            and expected_count>=1 and min_width>=1):
+        raise ValueError('invalid bar-group bounds/count/width')
+    xs=np.flatnonzero(mask[row,left:right+1])+left
+    spans=[]
+    if len(xs):
+        for group in np.split(xs,np.flatnonzero(np.diff(xs)>1)+1):
+            if len(group)>=min_width:spans.append([int(group[0]),int(group[-1])])
+    if len(spans)!=expected_count:
+        raise ValueError(f'bar-group count {len(spans)} != {expected_count}; '
+                         'check foot row, ROI and group boundaries before selector thresholds')
+    return spans
+
+
 def propose(job_path,out_dir):
     job_path=Path(job_path).resolve();job=read_json(job_path)
     out=Path(out_dir).resolve()

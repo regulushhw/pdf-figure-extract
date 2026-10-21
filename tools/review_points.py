@@ -93,6 +93,15 @@ def load_job(path):
             raise ValueError(f"invalid panel bounds: {name}")
         panel["bounds"] = box
         panel["calibration"] = axis_fit(panel["axis"])
+        for field in ('context_bounds', 'legend_bounds'):
+            if field in panel:
+                crop = list(map(float, panel[field]))
+                if (len(crop) != 4 or not (0 <= crop[0] < crop[2] < src['size'][0]
+                        and 0 <= crop[1] < crop[3] < src['size'][1])):
+                    raise ValueError(f'invalid {field}: {name}')
+                if field == 'context_bounds' and not (inside(box[:2], crop) and inside(box[2:], crop)):
+                    raise ValueError(f'context_bounds must contain panel: {name}')
+                panel[field] = crop
     seen = set()
     for item in job["items"]:
         ident = item["id"]
@@ -168,18 +177,53 @@ def font(size):
     return ImageFont.load_default()
 
 
-def render_sheet(items, sources, panels, path, zoom=3, columns=3):
+def render_sheet(items, sources, panels, path, zoom=3, columns=3, context=False):
     """Unmarked ink on left; candidate overlay on right, with source-pixel rulers."""
     tile_w = max(330, max((i["roi"][2] - i["roi"][0]) * zoom * 2 + 90 for i in items))
     tile_h = max((i["roi"][3] - i["roi"][1]) * zoom + 110 for i in items)
-    canvas = Image.new("RGB", (tile_w * min(columns, len(items)),
-                               tile_h * math.ceil(len(items) / columns)), "white")
+    width = tile_w * min(columns, len(items))
+    images = {}
+    context_rows = []
+    if context:
+        for panel_id in dict.fromkeys(i['panel'] for i in items):
+            panel = panels[panel_id]
+            source_id = panel['source']
+            if source_id not in images:
+                with Image.open(sources[source_id]['image']) as im:
+                    images[source_id] = im.convert('RGB')
+            for field in ('context_bounds', 'legend_bounds'):
+                if field == 'legend_bounds' and field not in panel:
+                    continue
+                bounds = panel.get(field, panel['bounds'])
+                crop = images[source_id].crop(tuple(bounds))
+                scale = min(1.0, (width - 20) / crop.width, 420 / crop.height)
+                crop = crop.resize((max(1, round(crop.width * scale)),
+                                    max(1, round(crop.height * scale))), Image.Resampling.LANCZOS)
+                if field == 'context_bounds':
+                    overlay = ImageDraw.Draw(crop)
+                    for item in items:
+                        if item['panel'] == panel_id:
+                            x0, y0, x1, y1 = item['roi']
+                            overlay.rectangle(((x0-bounds[0])*scale, (y0-bounds[1])*scale,
+                                               (x1-bounds[0])*scale, (y1-bounds[1])*scale),
+                                              outline=(210,35,35), width=2)
+                label = f'{panel_id}: {field}; overview only, use local original pixels below'
+                if field == 'context_bounds' and 'legend_bounds' not in panel:
+                    label += ' | no separate legend crop supplied'
+                context_rows.append((label, crop))
+    header_height = sum(crop.height + 32 for _, crop in context_rows)
+    canvas = Image.new("RGB", (width,
+                               header_height + tile_h * math.ceil(len(items) / columns)), "white")
     draw = ImageDraw.Draw(canvas)
+    context_y = 0
+    for label, crop in context_rows:
+        draw.text((10, context_y + 4), label, font=font(11), fill='black')
+        canvas.paste(crop, (10, context_y + 24))
+        context_y += crop.height + 32
     placements = {}
     colors = [(210, 35, 35), (0, 105, 190), (125, 30, 180), (0, 125, 70)]
-    images = {}
     for n, item in enumerate(items):
-        ox, oy = (n % columns) * tile_w, (n // columns) * tile_h
+        ox, oy = (n % columns) * tile_w, header_height + (n // columns) * tile_h
         x0, y0, x1, y1 = item["roi"]
         source_id = panels[item["panel"]]["source"]
         if source_id not in images:
@@ -226,14 +270,38 @@ def render_sheet(items, sources, panels, path, zoom=3, columns=3):
     return placements
 
 
-def prepare(job_path, out_dir, limit=6, offset=0, resume=None, sample_every=20, zoom=3):
+def prepare(job_path, out_dir, limit=6, offset=0, resume=None, sample_every=20, zoom=3, plan_only=False, context=False):
     if limit < 1 or offset < 0 or sample_every < 0 or not 1 <= zoom <= 8:
         raise ValueError("invalid batch size/offset/sample interval/zoom")
     job_path, job, sources, panels = load_job(job_path)
     result = load_result(job_path, job, sources, panels, resume)
     lookup = {x["id"]: x for x in result["items"]}
     queue = []
-    for index, item in enumerate(job["items"]):
+    sampling = job.get('review_sampling', {})
+    if not isinstance(sampling, dict):
+        raise ValueError('review_sampling must be an object')
+    fields = sampling.get('identity_fields', ['series', 'scenario', 'model', 'statistic'])
+    if (not isinstance(fields, list) or any(not isinstance(f, str) or not f for f in fields)
+            or len(set(fields)) != len(fields)):
+        raise ValueError('review_sampling.identity_fields must contain distinct nonempty field names')
+    counts, groups = {}, set()
+    for item in job["items"]:
+        identity = item['identity']
+        if 'identity_fields' in sampling and any(f not in identity for f in fields):
+            raise ValueError(f'sampling identity field missing: {item["id"]}')
+        group = json.dumps([item['panel'], sorted(item['roles']),
+                            {f: identity[f] for f in fields if f in identity}],
+                           sort_keys=True, ensure_ascii=False)
+        groups.add(group)
+        raw = list(item['roles'].values())
+        stable = (not item.get('flags') and all(len(c) == 1 for c in raw)
+                  and not any(math.dist(a[0], b[0]) <= 1.0
+                              for i, a in enumerate(raw) for b in raw[i+1:]))
+        # Stable sample positions depend on the original job, not the shrinking
+        # unfinished queue, so resume cannot silently move the sample targets.
+        sample_index = counts.get(group, 0) if stable else None
+        if stable:
+            counts[group] = sample_index + 1
         roles = lookup[item["id"]]["roles"]
         unfinished = [r for r in roles.values() if r["status"] in ("automatic_candidate", "needs_review")]
         if not unfinished:
@@ -253,7 +321,8 @@ def prepare(job_path, out_dir, limit=6, offset=0, resume=None, sample_every=20, 
                         and (a['status']=='automatic_candidate' or b['status']=='automatic_candidate')
                         and math.dist(a['pixel'],b['pixel'])<=1.0):
                     reasons.append(f'coincident_roles:{left}/{right}')
-        if sample_every and index % sample_every == 0:
+        if sample_every == 1 or (sample_every and sample_index is not None
+                                 and sample_index % sample_every == 0):
             reasons.append("automatic_sample")
         if reasons:
             card = {**copy.deepcopy(item), "review_reasons": reasons,
@@ -264,7 +333,16 @@ def prepare(job_path, out_dir, limit=6, offset=0, resume=None, sample_every=20, 
                 if state["status"] in ("reviewed", "explicit_missing"):
                     card["roles"][name] = [state["pixel"]] if state["pixel"] is not None else []
             queue.append(card)
+    # Exceptions remain complete and take precedence over routine samples.
+    queue.sort(key=lambda item: item['review_reasons'] == ['automatic_sample'])
     selected = queue[offset:offset + limit]
+    if plan_only:
+        return {'summary': summary(result), 'queue_items': len(queue),
+                'batch_items': len(selected), 'plan_only': True,
+                'exception_items': sum(i['review_reasons'] != ['automatic_sample'] for i in queue),
+                'sample_only_items': sum(i['review_reasons'] == ['automatic_sample'] for i in queue),
+                'sampling_groups': len(groups), 'identity_fields': fields,
+                'output_written': False}
     if not selected:
         return {"summary": summary(result), "queue_items": len(queue), "batch_items": 0}
     out_dir = Path(out_dir).resolve()
@@ -275,12 +353,12 @@ def prepare(job_path, out_dir, limit=6, offset=0, resume=None, sample_every=20, 
     manifest_path = out_dir / f"review_{base_tag}_{offset:05d}.json"
     if sheet_path.exists() or manifest_path.exists():
         raise ValueError("batch output exists; use another directory to preserve earlier evidence")
-    placements = render_sheet(selected, sources, panels, sheet_path, zoom=zoom)
+    placements = render_sheet(selected, sources, panels, sheet_path, zoom=zoom, context=context)
     manifest = {"schema_version": 1, "job": str(job_path), "job_sha256": digest(job_path),
                 "sources": sources, "panels": panels,
                 "base_result": str(Path(resume).resolve()) if resume else None,
                 "base_result_sha256": digest(resume) if resume else None,
-                "summary": summary(result), "queue_items": len(queue),
+                "summary": summary(result), "queue_items": len(queue), "context_requested": context,
                 "items": [{**i, "view": placements[i["id"]]} for i in selected],
                 "sheets": {sheet_path.name: digest(sheet_path)}}
     manifest["batch_id"] = hashlib.sha256(json.dumps(manifest, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -401,13 +479,15 @@ def main():
     p.add_argument("job"); p.add_argument("out_dir")
     p.add_argument("--limit", type=int, default=6); p.add_argument("--offset", type=int, default=0)
     p.add_argument("--sample-every", type=int, default=20); p.add_argument("--zoom", type=int, default=3)
+    p.add_argument('--plan-only', action='store_true', help='report exception/sample queue without rendering or writing outputs')
+    p.add_argument('--context', action='store_true', help='experimental panel overview and optional explicit legend crop')
     p.add_argument("--resume")
     p = sub.add_parser("apply")
     p.add_argument("manifest"); p.add_argument("decisions"); p.add_argument("output")
     p.add_argument("--resume")
     args = parser.parse_args()
     if args.command == "prepare":
-        result = prepare(args.job, args.out_dir, args.limit, args.offset, args.resume, args.sample_every, args.zoom)
+        result = prepare(args.job, args.out_dir, args.limit, args.offset, args.resume, args.sample_every, args.zoom, args.plan_only, args.context)
     else:
         result = apply(args.manifest, args.decisions, args.output, args.resume)
     if hasattr(sys.stdout, 'reconfigure'):

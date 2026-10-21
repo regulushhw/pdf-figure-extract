@@ -148,6 +148,98 @@ class AgentReviewTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)["summary"]["numeric_roles_reviewed"], 1)
 
+    def stable_items(self, series):
+        items = []
+        for index, name in enumerate(series):
+            item = copy.deepcopy(self.job['items'][1])
+            item.update(id=f's{index}', identity={'series': name, 'month': index},
+                        roles={'value': [[120, 60]]})
+            items.append(item)
+        return items
+
+    def test_grouped_samples_and_exceptions_first(self):
+        self.job['items'] = self.stable_items(['x', 'x', 'y', 'y']) + [self.job['items'][0]]
+        review.write_json(self.jp, self.job)
+        out = review.prepare(self.jp, self.root / 'grouped', limit=6)
+        cards = review.read_json(out['manifest'])['items']
+        self.assertEqual([c['id'] for c in cards], ['a', 's0', 's2'])
+        self.assertEqual(out['summary']['reviewed'], 0)
+
+    def test_plan_only_has_no_outputs_and_counts_mandatory_items(self):
+        self.job['items'] = self.stable_items(['x', 'y'])
+        flagged = copy.deepcopy(self.job['items'][0])
+        flagged.update(id='flagged', flags=['identity uncertain'])
+        self.job['items'].append(flagged)
+        review.write_json(self.jp, self.job)
+        target = self.root / 'never_created'
+        out = review.prepare(self.jp, target, plan_only=True)
+        self.assertFalse(target.exists())
+        self.assertFalse(out['output_written'])
+        self.assertEqual((out['exception_items'], out['sample_only_items']), (1, 2))
+        self.assertEqual(out['summary']['reviewed'], 0)
+
+    def test_resume_keeps_original_sample_positions(self):
+        self.job['items'] = self.stable_items(['x'] * 4)
+        review.write_json(self.jp, self.job)
+        out = review.prepare(self.jp, self.root / 'fixed', limit=1, sample_every=2)
+        dp = self.root / 'fixed_decisions.json'
+        review.write_json(dp, {'batch_id': out['batch_id'],
+            'reviewer': {'kind': 'agent', 'name': 'test'},
+            'decisions': [{'id': 's0', 'role': 'value', 'action': 'accept', 'candidate_index': 0}]})
+        result = review.apply(out['manifest'], dp, self.root / 'fixed_result.json')
+        resumed = review.prepare(self.jp, self.root / 'fixed_resume',
+                                 resume=result['output'], sample_every=2)
+        self.assertEqual([c['id'] for c in review.read_json(resumed['manifest'])['items']], ['s2'])
+
+    def test_explicit_sampling_fields_and_panel_coverage(self):
+        self.job['items'] = self.stable_items(['x', 'x'])
+        self.job['panels']['b'] = copy.deepcopy(self.job['panels']['a'])
+        self.job['items'][1]['panel'] = 'b'
+        review.write_json(self.jp, self.job)
+        out = review.prepare(self.jp, self.root / 'panels', plan_only=True)
+        self.assertEqual(out['sample_only_items'], 2)
+        for sampling in ([], {'identity_fields': ['series', 'period']}):
+            self.job['review_sampling'] = sampling
+            review.write_json(self.jp, self.job)
+            with self.assertRaises(ValueError):
+                review.prepare(self.jp, self.root / 'invalid_sampling', plan_only=True)
+
+    def test_context_preserves_local_pixels_and_sheet_coordinate_roundtrip(self):
+        self.job['panels']['a']['legend_bounds'] = [10, 10, 50, 25]
+        review.write_json(self.jp, self.job)
+        plain = review.prepare(self.jp, self.root / 'plain_context', limit=1, sample_every=0)
+        out = review.prepare(self.jp, self.root / 'with_context', limit=1, sample_every=0, context=True)
+        old = review.read_json(plain['manifest'])['items'][0]['view']
+        manifest = review.read_json(out['manifest'])
+        view = manifest['items'][0]['view']
+        self.assertTrue(manifest['context_requested'])
+        self.assertGreater(view['raw_origin'][1], old['raw_origin'][1])
+        def raw_pixels(prepared, v):
+            with Image.open(prepared['images'][0]) as image:
+                x,y=v['raw_origin']; box=v['source_roi']; z=v['zoom']
+                return image.crop((x,y,x+(box[2]-box[0]+1)*z,
+                                   y+(box[3]-box[1]+1)*z)).tobytes()
+        self.assertEqual(raw_pixels(plain,old),raw_pixels(out,view))
+        self.mp = Path(out['manifest'])
+        d = copy.deepcopy(self.decisions)
+        pixel = [80.25, 140.5]
+        d['batch_id'] = out['batch_id']
+        d['decisions'][0].update(space='sheet', view='raw', sheet=view['sheet'],
+            pixel=[view['raw_origin'][k]+(pixel[k]-view['source_roi'][k])*view['zoom']
+                   +view['pixel_center_offset'] for k in (0,1)])
+        result = review.read_json(self.run_apply(d, 'context_result.json')['output'])
+        self.assertEqual(result['items'][0]['roles']['lower']['pixel'],pixel)
+        self.assertEqual(result['summary']['numeric_roles_reviewed'],1)
+
+    def test_context_rejects_bad_bounds(self):
+        for field, bounds in [('legend_bounds', [0,0,201,50]),
+                              ('context_bounds', [20,20,180,180])]:
+            job=copy.deepcopy(self.job)
+            job['panels']['a'][field]=bounds
+            review.write_json(self.jp,job)
+            with self.assertRaises(ValueError):
+                review.prepare(self.jp,self.root/'bad_context',context=True)
+
 
 if __name__ == "__main__":
     unittest.main()

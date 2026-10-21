@@ -5,9 +5,10 @@ import sys
 import tempfile
 import unittest
 from PIL import Image,ImageDraw
+import numpy as np
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
-from propose_bitmap_points import propose
+from propose_bitmap_points import propose,locate_bar_groups
 from review_points import read_json,write_json,prepare
 
 
@@ -72,6 +73,34 @@ class BitmapTests(unittest.TestCase):
         self.job['items'][0]['roi']=[-1,0,95,95]
         with self.assertRaises(ValueError):self.run_propose()
         self.assertEqual((self.root/'figure.png').read_bytes(),before)
+
+    def test_actual_bar_groups_preserve_irregular_spacing(self):
+        mask=np.zeros((20,100),dtype=bool)
+        for lo,hi in [(3,14),(30,41),(72,85)]:mask[10,lo:hi+1]=True
+        # Equal group centres (8.5,44,79.5) place the middle one in blank ink.
+        self.assertFalse(mask[10,44])
+        spans=locate_bar_groups(mask,row=10,left=1,right=98,expected_count=3)
+        self.assertEqual(spans,[[3,14],[30,41],[72,85]])
+        self.assertTrue(all(mask[10,round((a+b)/2)] for a,b in spans))
+
+    def test_bar_group_count_mismatch_or_axis_row_fails_before_expansion(self):
+        mask=np.zeros((20,100),dtype=bool)
+        mask[10,3:15]=True;mask[10,30:42]=True
+        mask[15,1:99]=True  # wrong row: continuous horizontal axis
+        for row in [9,10,15]:
+            with self.assertRaisesRegex(ValueError,'check foot row, ROI'):
+                locate_bar_groups(mask,row=row,left=1,right=98,expected_count=3)
+
+    def test_bar_group_validation_and_small_noise(self):
+        mask=np.zeros((20,100),dtype=bool)
+        mask[10,3:15]=True;mask[10,25:27]=True
+        self.assertEqual(locate_bar_groups(mask,row=10,left=1,right=98,expected_count=1),[[3,14]])
+        for patch in [{'row':20},{'left':-1},{'right':100},{'expected_count':0},
+                      {'min_width':0},{'row':10.0}]:
+            args=dict(row=10,left=1,right=98,expected_count=1);args.update(patch)
+            with self.assertRaises(ValueError):locate_bar_groups(mask,**args)
+        with self.assertRaises(ValueError):
+            locate_bar_groups(mask.astype('uint8'),row=10,left=1,right=98,expected_count=1)
 
 
 if __name__=='__main__':unittest.main()

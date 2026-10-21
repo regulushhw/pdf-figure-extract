@@ -27,6 +27,29 @@ python /path/to/tests/test_regressions.py
 
 柱图示例见 `examples/job_bars.example.json`；实际槽位边界、图例映射、单位和时段须逐图确认。输出前缀指向工作区，原始PDF只读；已有文件修改前备份。
 
+## 共享工作簿保存
+
+`tools/workbook_save/`提供可选的计划写入、原生包保留、引擎检查与保存入口；不包含论文、项目底稿或本机依赖。Python使用requirements中的依赖；写入/渲染另需已配置的`@oai/artifact-tool`与Node.js，提交入口需PowerShell。Codex中先获取工作区依赖路径；普通Python环境不保证具有此表格引擎，可独立使用原有提取和核验工具。
+
+运行时可设置`FIGURE_NODE`、`FIGURE_PYTHON`指定可执行文件，`FIGURE_ARTIFACT_NODE_MODULES`指定已有模块目录；不修改依赖目录，也不将模块打包进仓库。Node会先尝试正常模块解析，再尝试指定目录或运行时相邻的node_modules。
+
+每个任务目录放一份`A1_修改计划.json`（编号可换），至少声明`paper`、`target`、`backup`、当前原件`input_sha256`及`changes`（sheet/range/二维values）；`target`、`backup`使用绝对路径，备份父目录须存在。`styles`可显式设置`from_sheet`与`from`复用原件格式；预览通过`previews`显式指定sheet/range，不猜测业务工作表。调用前先备份并核对计划，以下node/python须为已配置的运行时：
+
+```powershell
+$env:SRDP_TASK_DIR = (Resolve-Path -LiteralPath 'work').Path
+node tools/workbook_save/author.mjs author 1
+python tools/workbook_save/merge_cells.py 1
+node tools/workbook_save/author.mjs preview_draft 1
+# 查看修改稿后再保存；失败须停止，不能继续提交。
+& ./tools/workbook_save/recalculate.ps1 -PaperIds @(1) -BundledEngine
+node tools/workbook_save/author.mjs preview 1
+Remove-Item Env:SRDP_TASK_DIR
+```
+
+请逐条检查退出码；工具失败不代表下一条命令也会自动停止。引擎路径会整本导出并比较全部类型化值，然后保留原生修改包，避免引擎改变空值或图片结构；当前这种路径遇任意公式即拒绝，不能冒充含公式工作簿的重算方案。含公式需适用的原生表格引擎并完成缓存与计算核验。候选提交前后检查原件摘要、计划外内容、工作表与图片，保留替换前文件。
+
+`python tests/test_workbook_save.py`运行合成保护检查；配置好Node、模块目录和PowerShell后，设置`FIGURE_SAVE_INTEGRATION=1`可额外运行无复制脚本的新目录整链测试，输入仅为测试生成的工作簿和色块图片。
+
 ## 同色曲线与整条遗漏检查
 
 折线job可用以下字段替换`color_map`（二者互斥）。颜色、线宽和线型须与原图图例核对，不能依数值大小猜情景；线宽单位为PDF pt。
