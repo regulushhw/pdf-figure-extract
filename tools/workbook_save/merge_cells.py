@@ -15,8 +15,10 @@ for a in (list(map(int,sys.argv[1:])) or [1,2,5]):
  orig=package(target);out=dict(orig);patch=package(W/f'A{a}_authored_cells.xlsx');os=sheets(orig);ps=sheets(patch)
  strings=[''.join(t.itertext()) for t in E.fromstring(patch['xl/sharedStrings.xml'])] if 'xl/sharedStrings.xml' in patch else []
  trees={s:E.fromstring(orig[f]) for s,f in os.items()};pc={s:{c.get('r'):c for c in E.fromstring(patch[f]).iter(q('c'))} for s,f in ps.items()}
+ indexes={name:({int(r.get('r')):r for r in root.find(q('sheetData'))},{v.get('r'):v for v in root.iter(q('c'))}) for name,root in trees.items()}
+ edited_rows={}
  for c in p['changes']:
-  name=c['sheet'];root=trees[name];data=root.find(q('sheetData'));rows={int(r.get('r')):r for r in data};allcells={v.get('r'):v for v in root.iter(q('c'))}
+  name=c['sheet'];root=trees[name];data=root.find(q('sheetData'));rows,allcells=indexes[name]
   c0,r0,c1,r1=range_boundaries(c['range'])
   for rr in range(r0,r1+1):
    newrow=rr not in rows
@@ -31,7 +33,7 @@ for a in (list(map(int,sys.argv[1:])) or [1,2,5]):
    for cc in range(c0,c1+1):
     addr=f'{get_column_letter(cc)}{rr}';cell=cells.get(addr)
     if cell is None:
-     cell=E.SubElement(row,q('c'),r=addr)
+     cell=E.SubElement(row,q('c'),r=addr);allcells[addr]=cell
      tmpl=allcells.get(f'{get_column_letter(cc)}{c.get("style_template_row") or 6}')
      if tmpl is not None and tmpl.get('s'):cell.set('s',tmpl.get('s'))
     for el in list(cell):cell.remove(el)
@@ -44,12 +46,14 @@ for a in (list(map(int,sys.argv[1:])) or [1,2,5]):
       if t:cell.set('t',t)
       for v in src:
        if v.tag in [q('v'),q('f'),q('is')]:cell.append(copy.deepcopy(v))
-   row[:]=sorted(row,key=lambda x:range_boundaries(x.get('r'))[0])
+   edited_rows[name,rr]=row
    if newrow:row.set('ht','36');row.set('customHeight','1')
-  data[:]=sorted(data,key=lambda x:int(x.get('r')))
   dim=root.find(q('dimension'))
   if dim is not None:
    aa,bb,cc,dd=range_boundaries(dim.get('ref'));dim.set('ref',f'A1:{get_column_letter(max(cc,c1))}{max(dd,r1)}')
+ for row in edited_rows.values():row[:]=sorted(row,key=lambda x:range_boundaries(x.get('r'))[0])
+ for name in {name for name,rr in edited_rows}:
+  data=trees[name].find(q('sheetData'));data[:]=sorted(data,key=lambda x:int(x.get('r')))
  for spec in p.get('styles',[]):
   root=trees[spec['sheet']];cells={v.get('r'):v for v in root.iter(q('c'))};style=next(v for v in trees[spec.get('from_sheet',spec['sheet'])].iter(q('c')) if v.get('r')==spec['from']).get('s');c0,r0,c1,r1=range_boundaries(spec['range'])
   for rr in range(r0,r1+1):
@@ -59,16 +63,43 @@ for a in (list(map(int,sys.argv[1:])) or [1,2,5]):
      if style is None:dst.attrib.pop('s',None)
      else:dst.set('s',style)
  for spec in p.get('column_widths',[]):
-  root=trees[spec['sheet']];cols=root.find(q('cols'));template=next(v for v in cols if int(v.get('min'))<=spec['from']<=int(v.get('max')))
+  root=trees[spec['sheet']];cols=root.find(q('cols'))
+  if cols is None:
+   cols=E.Element(q('cols'));root.insert(list(root).index(root.find(q('sheetData'))),cols)
+  template=next((v for v in cols if 'from' in spec and int(v.get('min'))<=spec['from']<=int(v.get('max'))),None)
+  width=spec.get('width',None if template is None else template.get('width'))
+  if width is None:raise ValueError('column_widths needs width or an existing from column')
+  if not 0<float(width)<=255:raise ValueError('column width must be between 0 and 255')
   for cc in range(spec['min'],spec['max']+1):
    present=next((v for v in cols if int(v.get('min'))<=cc<=int(v.get('max'))),None)
-   if present is not None and int(present.get('min'))!=int(present.get('max')):raise ValueError('cannot overwrite grouped source columns')
+   if present is not None and int(present.get('min'))!=int(present.get('max')):
+    lo,hi=int(present.get('min')),int(present.get('max'));cols.remove(present)
+    for left,right in [(lo,cc-1),(cc+1,hi)]:
+     if left<=right:
+      sibling=copy.deepcopy(present);sibling.set('min',str(left));sibling.set('max',str(right));cols.append(sibling)
+    present=copy.deepcopy(present);present.set('min',str(cc));present.set('max',str(cc));cols.append(present)
    if present is None:present=E.SubElement(cols,q('col'),min=str(cc),max=str(cc))
-   present.set('width',template.get('width'));present.set('customWidth','1')
+   present.set('width',str(width));present.set('customWidth','1')
   cols[:]=sorted(cols,key=lambda v:int(v.get('min')))
  for spec in p.get('row_heights',[]):
-  data=trees[spec['sheet']].find(q('sheetData'));row=next(v for v in data if int(v.get('r'))==spec['row']);row.set('ht',str(spec['height']));row.set('customHeight','1')
- touched={spec['sheet'] for kind in ('changes','styles','row_heights','column_widths') for spec in p.get(kind,[])}
+  data=trees[spec['sheet']].find(q('sheetData'));rows=indexes[spec['sheet']][0];row=rows.get(spec['row'])
+  if row is None:row=E.SubElement(data,q('row'),r=str(spec['row']));rows[spec['row']]=row
+  row.set('ht',str(spec['height']));row.set('customHeight','1')
+ for name in {s['sheet']for s in p.get('row_heights',[])}:
+  data=trees[name].find(q('sheetData'));data[:]=sorted(data,key=lambda x:int(x.get('r')))
+ for spec in p.get('merges',[]):
+  root=trees[spec['sheet']];merged=root.find(q('mergeCells'));new=range_boundaries(spec['range'])
+  if merged is None:
+   preceding={'sheetData','sheetCalcPr','sheetProtection','protectedRanges','scenarios','autoFilter','sortState','dataConsolidate','customSheetViews'}
+   position=max(i for i,child in enumerate(root)if E.QName(child).localname in preceding)+1
+   merged=E.Element(q('mergeCells'));root.insert(position,merged)
+  for old in merged:
+   if old.get('ref')==spec['range']:break
+   old_left,old_top,old_right,old_bottom=range_boundaries(old.get('ref'));x,y,z,t=new
+   if max(old_left,x)<=min(old_right,z) and max(old_top,y)<=min(old_bottom,t):raise ValueError('merge overlaps an existing source merge')
+  else:E.SubElement(merged,q('mergeCell'),ref=spec['range'])
+  merged.set('count',str(len(merged)))
+ touched={spec['sheet'] for kind in ('changes','styles','row_heights','column_widths','merges') for spec in p.get(kind,[])}
  for s in touched:out[os[s]]=E.tostring(trees[s],encoding='utf-8')
  changed=[n for n in orig if orig[n]!=out[n]];assert set(changed)<=set(os[s] for s in touched)
  with zipfile.ZipFile(W/f'A{a}_保存前.xlsx','w',zipfile.ZIP_DEFLATED) as z:

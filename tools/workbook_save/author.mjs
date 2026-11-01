@@ -26,6 +26,11 @@ for(const a of (papers.length?papers:[1])){
   const draft=path.join(here,`A${a}_保存前.xlsx`),full=path.join(here,`A${a}_引擎完整导出.xlsx`);
   const wb=await SpreadsheetFile.importXlsx(await FileBlob.load(draft));
   wb.recalculate();
+  for(const view of plan.previews||[]){
+   const img=await wb.render({sheetName:view.sheet,range:view.range,scale:1.1,format:'png'});
+   const label=view.label?`_${view.label.replace(/[^\p{L}\p{N}_-]/gu,'_')}`:'';
+   await fs.writeFile(path.join(here,`A${a}_engine_preview${label}.png`),new Uint8Array(await img.arrayBuffer()));
+  }
   await (await SpreadsheetFile.exportXlsx(wb)).save(full);
   execFileSync(python,[path.join(toolDir,'verify_continuation.py'),'--engine-values','--candidate',full,String(a)],
    {stdio:'inherit',windowsHide:true,env:{...process.env,PYTHONIOENCODING:'utf-8'}});

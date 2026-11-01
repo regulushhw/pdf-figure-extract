@@ -7,6 +7,13 @@ W=Path(os.environ.get('SRDP_TASK_DIR') or Path(__file__).resolve().parent).resol
 
 def plan_errors(plan,book):
  errors=[]
+ for spec in plan.get('merges',[]):
+  if spec['sheet'] not in book.sheetnames:
+   errors.append(['missing_sheet',spec['sheet']]);continue
+  a,b,c,d=range_boundaries(spec['range'])
+  for row in book[spec['sheet']].iter_rows(min_row=b,max_row=d,min_col=a,max_col=c):
+   for cell in row:
+    if (cell.row,cell.column)!=(b,a) and cell.value is not None:errors.append(['merge_would_hide_value',spec['sheet'],cell.coordinate])
  for change in plan['changes']:
   sheet=change['sheet']
   if sheet not in book.sheetnames:
@@ -51,6 +58,14 @@ def content_errors(plan,book):
   for row in sheet.iter_rows(min_row=r0,max_row=r1,min_col=c0,max_col=c1):
    for cell in row:
     if cell.number_format!=expected:errors.append(['number_format',sheet.title,cell.coordinate,expected,cell.number_format])
+ for spec in plan.get('column_widths',[]):
+  sheet=book[spec['sheet']]
+  if 'width' not in spec:continue
+  for col in range(spec['min'],spec['max']+1):
+   dim=next((v for v in sheet.column_dimensions.values() if (v.min or openpyxl.utils.column_index_from_string(v.index))<=col<=(v.max or openpyxl.utils.column_index_from_string(v.index))),None)
+   if dim is None or abs(dim.width-float(spec['width']))>0.01:errors.append(['column_width',sheet.title,col,spec['width'],None if dim is None else dim.width])
+ for spec in plan.get('merges',[]):
+  if spec['range'] not in {str(r)for r in book[spec['sheet']].merged_cells.ranges}:errors.append(['merge_missing',spec['sheet'],spec['range']])
  return errors
 
 def media_hashes(path):
