@@ -3,6 +3,8 @@
 python tools/auto_trace_bitmap.py trace_job.json new_output_dir
 Original implementation. No model calls, white-space interpolation or automatic
 identity approval. Reuses trace_bitmap input and review_points output contracts.
+An anchor column with no selected ink is reported as anchor_without_ink and the
+other sample columns are still returned; place the missed point with drag_points.
 """
 import copy
 import heapq
@@ -88,10 +90,23 @@ def route_trace(rgb,t):
     start,end=t['anchors'][0][0],t['anchors'][-1][0]
     if not 0<=left<=start<end<=right<rgb.shape[1] or not 0<=top<bottom<rgb.shape[0]:raise ValueError('invalid trace bounds')
     columns={x:runs(mask,x,top,bottom) for x in range(start,end+1)}
-    points=anchored_path(columns,t['anchors'],t.get('max_step_px',20),t.get('anchor_tolerance_px',2),t.get('ambiguity_cost',.5))
-    connected=all(r['pixel'] is not None for r in points.values())
-    methods={'column_path':{'status':'proposed' if connected else 'disconnected',
-                           'path':[r['pixel'] for r in points.values() if r['pixel']]}}
+    # A coarse marker's anchor often sits in the white center, or beside the
+    # error-bar stem. That is a reviewable gap, not a reason to drop the trace.
+    column_error=None
+    points=None
+    try:
+        points=anchored_path(columns,t['anchors'],t.get('max_step_px',20),t.get('anchor_tolerance_px',2),t.get('ambiguity_cost',.5))
+    except ValueError as exc:
+        if 'anchor has no ink support' not in str(exc):
+            raise
+        column_error=str(exc)
+    if points is None:
+        connected=False
+        methods={'column_path':{'status':'anchor_without_ink','path':[],'detail':column_error}}
+    else:
+        connected=all(r['pixel'] is not None for r in points.values())
+        methods={'column_path':{'status':'proposed' if connected else 'disconnected',
+                               'path':[r['pixel'] for r in points.values() if r['pixel']]}}
     methods['ink_graph']=graph_path(working,t['roi'],selector,t['anchors'])
     if not connected and methods['ink_graph']['status']!='proposed' and selector['mode']=='gray':
         methods['occlusion_graph']=graph_path(working,t['roi'],selector,t['anchors'],True,t.get('max_occlusion_fraction',.15))
@@ -111,9 +126,13 @@ def route_trace(rgb,t):
                     flags.append('method_disagreement');candidates.append(p)
         if len(columns[x])>1:flags.append('multiple_ink_runs')
         if any(b-a+1>8 for a,b in columns[x]):flags.append('thick_or_merged_ink')
-        column_flags=points[x]['flags']
-        if selected:column_flags=[f for f in column_flags if f not in ('disconnected_path','unanchored_segment','no_ink')]
+        column_flags=[] if points is None else list(points[x]['flags'])
+        if selected and points is not None:
+            column_flags=[f for f in column_flags if f not in ('disconnected_path','unanchored_segment','no_ink')]
         flags.extend(column_flags)
+        for info in methods.values():
+            if info.get('status') in ('anchor_without_ink','anchor_without_preferred_ink'):
+                flags.append(info['status'])
         samples.append({'x':x,'candidates':candidates,'flags':sorted(set(flags)),
                         'method_candidates':by_method,'selected_method':selected})
     return {'selected_method':selected,'methods':methods,'samples':samples}

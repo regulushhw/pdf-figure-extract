@@ -6,7 +6,8 @@ CLI: prepare job.json out_dir [--limit 6 --offset 0 --resume result.json]
 Original implementation; no third-party digitizer code. Image coordinates use
 the original image's top-left origin. Only explicit linear tick calibration is
 supported. Proposed coordinates are never promoted to visually reviewed ones
-without an individual decision. See ../references/agent_review.md.
+without an individual decision. drag_points.py is the one-command correction
+loop (numbered overlay, move/add/delete/undo). See ../SKILL.md.
 """
 from __future__ import annotations
 
@@ -70,6 +71,18 @@ def axis_fit(axis):
 def value_at(pixel, calibration):
     pos = pixel[0 if calibration["coordinate"] == "x" else 1]
     return calibration["slope"] * pos + calibration["intercept"]
+
+
+def data_to_pixel(pixel, calibration, value):
+    """Inverse of value_at. Only the calibrated axis moves; the other pixel stays."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError("data value must be a finite number")
+    pos = (float(value) - calibration["intercept"]) / calibration["slope"]
+    if not math.isfinite(pos):
+        raise ValueError("data value does not land on a finite source pixel")
+    point = pair(pixel)
+    point[0 if calibration["coordinate"] == "x" else 1] = pos
+    return point
 
 
 def load_job(path):
@@ -167,6 +180,43 @@ def summary(result):
             "numeric_roles_unresolved": states["needs_review"] + states["explicit_missing"],
             "visual_roles_unreviewed": states["automatic_candidate"] + states["needs_review"],
             "review_scope": "visual self-check; not independent source validation"}
+
+
+def point_catalog(result):
+    """Stable 1-based numbers in item order, then role order. Ids do not change when n does."""
+    rows = []
+    number = 0
+    for item in result["items"]:
+        calibration = result["panels"][item["panel"]]["calibration"]
+        for role, state in item["roles"].items():
+            number += 1
+            pixel = state.get("pixel")
+            rows.append({
+                "n": number,
+                "id": item["id"],
+                "role": role,
+                "panel": item["panel"],
+                "series": (item.get("identity") or {}).get("series"),
+                "identity": copy.deepcopy(item.get("identity") or {}),
+                "pixel": None if not pixel else [float(pixel[0]), float(pixel[1])],
+                "anchor": [float(item["anchor"][0]), float(item["anchor"][1])],
+                "value": None if state.get("value") is None else float(state["value"]),
+                "unit": calibration.get("unit"),
+                "axis": calibration.get("coordinate"),
+                "status": state.get("status"),
+                "in_view": False,
+                "coincident_with": format_coincident(item.get("coincident_with")),
+            })
+    return rows
+
+
+def format_coincident(value):
+    """Series names that share this point. Empty when the point is not a copy."""
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value
+    return ";".join(str(name) for name in value)
 
 
 def font(size):
@@ -271,6 +321,233 @@ def render_sheet(items, sources, panels, path, zoom=3, columns=3, context=False,
                                     "zoom": zoom, "pixel_center_offset": center_offset}
     canvas.save(path)
     return placements
+
+
+def overlay_scale(width, height, zoom=None):
+    """Overview keeps the long side near 1100px, including panels larger than that.
+
+    Small crops are enlarged (at most 6x) so ticks stay readable. Explicit zoom
+    is nearest-neighbor and stays between 1 and 8. A floor of 1 would leave a
+    full journal figure at several thousand pixels, which the overview cannot show.
+    """
+    long_side = max(1, int(width), int(height))
+    if zoom is not None:
+        scale = float(zoom)
+        if not 1 <= scale <= 8:
+            raise ValueError("zoom must be between 1 and 8")
+        return scale
+    scale = 1100.0 / long_side
+    if scale >= 2:
+        return float(min(6, int(scale)))
+    if scale > 1:
+        return 1.0
+    return scale
+
+
+def grid_step(span):
+    raw = max(1.0, float(span)) / 8.0
+    for step in (1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000):
+        if step >= raw - 1e-9:
+            return step
+    return 5000
+
+
+def output_xy(pixel, bounds, origin, scale_x, scale_y):
+    """Source-pixel position -> output pixel of a numbered overlay. Commands do not use this."""
+    return (round(origin[0] + (float(pixel[0]) - bounds[0]) * scale_x),
+            round(origin[1] + (float(pixel[1]) - bounds[1]) * scale_y))
+
+
+def _text_size(draw, text, face):
+    box = draw.textbbox((0, 0), text, font=face)
+    return box[2] - box[0], box[3] - box[1]
+
+
+def render_numbered_overlay(result, path, boxes, rows, zoom=None):
+    """Figure crop with a source-pixel grid, point numbers, and ids.
+
+    `boxes` are inclusive source pixels: [{'panel', 'bounds': [x0, y0, x1, y1]}].
+    Grid numbers are source pixels. Parentheses, when present, are data values
+    on the one calibrated axis. Point commands must use those values, not the
+    PNG's own pixel indices.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not boxes:
+        raise ValueError("no overlay region")
+    scratch = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    prepared = []
+    for box in boxes:
+        panel_id = box["panel"]
+        panel = result["panels"][panel_id]
+        source = result["sources"][panel["source"]]
+        bounds = [int(math.floor(v)) for v in box["bounds"]]
+        x0, y0, x1, y1 = bounds
+        width, height = source["size"]
+        if not (0 <= x0 < x1 < width and 0 <= y0 < y1 < height):
+            raise ValueError("overlay box is outside the source image")
+        scale = overlay_scale(x1 - x0 + 1, y1 - y0 + 1, zoom)
+        prepared.append({"panel": panel_id, "bounds": bounds, "scale": scale,
+                         "source": source["image"], "calibration": panel["calibration"]})
+    # One scale keeps stacked panels comparable. Zoom is already a single crop.
+    scale = min(item["scale"] for item in prepared)
+    cache = {}
+    tiles = []
+    for item in prepared:
+        if item["source"] not in cache:
+            with Image.open(item["source"]) as image:
+                cache[item["source"]] = image.convert("RGB")
+        x0, y0, x1, y1 = item["bounds"]
+        crop = cache[item["source"]].crop((x0, y0, x1 + 1, y1 + 1))
+        resample = Image.Resampling.NEAREST if scale >= 2 else Image.Resampling.LANCZOS
+        resized = crop.resize((max(1, round(crop.width * scale)), max(1, round(crop.height * scale))), resample)
+        item["scale_x"] = resized.width / crop.width
+        item["scale_y"] = resized.height / crop.height
+        item["image"] = resized
+        item["step"] = grid_step(max(crop.width, crop.height))
+        tiles.append(item)
+    margin_r, title_h, axis_h = 16, 26, 36
+    # Source-pixel labels on a journal figure are long ("4500 (12.3%)").
+    # Measure them before choosing the gutter, or the first digits are clipped.
+    probe_font = font(12)
+
+    def tick_label(calibration, source_value, along):
+        text = str(int(source_value)) if float(source_value).is_integer() else f"{source_value:g}"
+        if calibration["coordinate"] == along:
+            data = calibration["slope"] * source_value + calibration["intercept"]
+            text += f" ({data:.4g}{calibration.get('unit') or ''})"
+        return text
+
+    longest = 48
+    for tile in tiles:
+        step = tile["step"]
+        y_cursor = math.ceil(tile["bounds"][1] / step) * step
+        while y_cursor <= tile["bounds"][3]:
+            longest = max(longest, _text_size(scratch, tick_label(tile["calibration"], y_cursor, "y"), probe_font)[0])
+            y_cursor += step
+    margin_l = max(112, int(longest) + 20)
+    canvas_w = max(480, max(margin_l + tile["image"].width + margin_r for tile in tiles))
+    legend_font = font(13)
+    legend_items = []
+    visible = [row for row in rows if row.get("in_view")]
+    for row in visible[:60]:
+        value = "missing" if row["value"] is None else f"{row['value']:.4g}{row['unit'] or ''}"
+        shared = f" coincident_with={row['coincident_with']}" if row.get("coincident_with") else ""
+        legend_items.append(f"{row['n']} {row.get('series') or row['id']} {value}{shared}")
+    if len(visible) > 60:
+        legend_items.append(f"+{len(visible) - 60} more in the point table")
+    if not legend_items:
+        legend_items.append("no digitized points in this crop")
+    legend_lines, current = [], ""
+    for item in legend_items:
+        trial = item if not current else current + "    " + item
+        if current and _text_size(scratch, trial, legend_font)[0] > canvas_w - 16:
+            legend_lines.append(current)
+            current = item
+        else:
+            current = trial
+    if current:
+        legend_lines.append(current)
+    legend_h = 12 + 18 * len(legend_lines)
+    canvas_h = legend_h + sum(title_h + tile["image"].height + axis_h for tile in tiles)
+    canvas = Image.new("RGB", (canvas_w, canvas_h), "white")
+    draw = ImageDraw.Draw(canvas)
+    title_font, grid_font = font(15), font(12)
+    label_font = font(max(14, min(28, round(4 * max(scale, 1)))))
+    cursor = 0
+    placement_panels = []
+    for tile in tiles:
+        calibration = tile["calibration"]
+        draw.text((8, cursor + 4),
+                  f"{tile['panel']}: source pixels, y down; parentheses are {calibration.get('unit') or ''} on {calibration['coordinate']}",
+                  font=title_font, fill=(0, 0, 0))
+        origin = [margin_l, cursor + title_h]
+        canvas.paste(tile["image"], tuple(origin))
+        x0, y0, x1, y1 = tile["bounds"]
+        scale_x, scale_y = tile["scale_x"], tile["scale_y"]
+        top, bottom = origin[1], origin[1] + tile["image"].height - 1
+        left, right = origin[0], origin[0] + tile["image"].width - 1
+
+        def place(source_x, source_y, _origin=origin, _bounds=tile["bounds"], _sx=scale_x, _sy=scale_y):
+            return (_origin[0] + (source_x - _bounds[0]) * _sx,
+                    _origin[1] + (source_y - _bounds[1]) * _sy)
+
+        def axis_text(source_value, along):
+            text = str(int(source_value)) if float(source_value).is_integer() else f"{source_value:g}"
+            if calibration["coordinate"] == along:
+                data = calibration["slope"] * source_value + calibration["intercept"]
+                text += f" ({data:.4g}{calibration.get('unit') or ''})"
+            return text
+
+        step = tile["step"]
+        last = -1e9
+        x = math.ceil(x0 / step) * step
+        while x <= x1:
+            gx, _ = place(x, y0)
+            draw.line((gx, top, gx, bottom), fill=(186, 198, 214))
+            if gx - last >= 28:
+                label = axis_text(x, "x")
+                tw, th = _text_size(draw, label, grid_font)
+                draw.text((gx - tw / 2, bottom + 4), label, font=grid_font, fill=(20, 40, 80))
+                last = gx
+            x += step
+        last = -1e9
+        y = math.ceil(y0 / step) * step
+        while y <= y1:
+            _, gy = place(x0, y)
+            draw.line((left, gy, right, gy), fill=(186, 198, 214))
+            if gy - last >= 16:
+                draw.line((left - 7, gy, left, gy), fill=(20, 20, 20))
+                label = axis_text(y, "y")
+                tw, th = _text_size(draw, label, grid_font)
+                draw.text((max(2, left - 10 - tw), gy - th / 2), label, font=grid_font, fill=(20, 40, 80))
+                last = gy
+            y += step
+        draw.rectangle((left, top, right, bottom), outline=(40, 40, 40))
+        arm = max(6, round(4 * max(scale_x, 1)))
+        stacked = {}
+        for row in rows:
+            if row["panel"] != tile["panel"] or not row.get("in_view"):
+                continue
+            loc = row["pixel"] or row["anchor"]
+            ix, iy = output_xy(loc, tile["bounds"], origin, scale_x, scale_y)
+            slot = stacked.get((ix, iy), 0)
+            stacked[(ix, iy)] = slot + 1
+            if slot == 0:
+                if row["pixel"] is None:
+                    draw.ellipse((ix - 6, iy - 6, ix + 6, iy + 6), outline=(90, 90, 90), width=2)
+                else:
+                    draw.line((ix - arm, iy, ix + arm, iy), fill=(255, 255, 255), width=5)
+                    draw.line((ix, iy - arm, ix, iy + arm), fill=(255, 255, 255), width=5)
+                    draw.line((ix - arm, iy, ix + arm, iy), fill=(220, 30, 30), width=2)
+                    draw.line((ix, iy - arm, ix, iy + arm), fill=(220, 30, 30), width=2)
+                    draw.rectangle((ix - 1, iy - 1, ix + 1, iy + 1), fill=(220, 30, 30))
+            label = f"{row['n']} {row.get('series') or row['id']}"
+            if row.get("coincident_with"):
+                label += f" ={row['coincident_with']}"
+            if row["pixel"] is None:
+                label += " missing"
+            if len(label) > 42:
+                label = f"{row['n']} {row.get('series') or row['id']}"
+            tw, th = _text_size(draw, label, label_font)
+            lx, ly = ix + arm + 3, iy - th - 4 + slot * (th + 5)
+            if lx + tw + 8 > canvas_w - 4:
+                lx = max(4, ix - arm - tw - 8)
+            if ly < origin[1]:
+                ly = iy + arm + 2 + slot * (th + 5)
+            draw.rectangle((lx - 2, ly - 1, lx + tw + 3, ly + th + 2), fill=(255, 255, 255), outline=(0, 0, 0))
+            draw.text((lx, ly), label, font=label_font, fill=(0, 0, 0))
+        placement_panels.append({
+            "panel": tile["panel"], "origin": origin, "bounds": tile["bounds"],
+            "scale_x": scale_x, "scale_y": scale_y, "grid_step": step,
+            "resample": "nearest" if scale >= 2 else "lanczos",
+        })
+        cursor += title_h + tile["image"].height + axis_h
+    for index, line in enumerate(legend_lines):
+        draw.text((8, cursor + 4 + index * 18), line, font=legend_font, fill=(0, 0, 0))
+    canvas.save(path)
+    return {"panels": placement_panels, "size": [canvas_w, canvas_h],
+            "scale_x": placement_panels[0]["scale_x"], "scale_y": placement_panels[0]["scale_y"]}
 
 
 def prepare(job_path, out_dir, limit=6, offset=0, resume=None, sample_every=20, zoom=3, plan_only=False, context=False):

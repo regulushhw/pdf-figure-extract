@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image,ImageDraw
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
 from auto_trace_bitmap import route_trace,graph_path,run
-from review_points import write_json,prepare
+from review_points import write_json,read_json,prepare
 
 
 class AutoTraceTests(unittest.TestCase):
@@ -59,6 +59,25 @@ class AutoTraceTests(unittest.TestCase):
         rgb,t=self.fixture('clean')
         with self.assertRaises(ValueError):graph_path(rgb,[-1,5,100,100],t['selector'],t['anchors'])
         with self.assertRaises(ValueError):graph_path(rgb,t['roi'],t['selector'],[[10,60],[120,60]])
+
+    def test_anchor_without_ink_stays_reviewable(self):
+        rgb,t=self.fixture('clean')
+        t['anchors']=[[10,10],[90,60]]
+        routed=route_trace(rgb,t)
+        self.assertEqual(routed['methods']['column_path']['status'],'anchor_without_ink')
+        self.assertEqual(routed['methods']['ink_graph']['status'],'anchor_without_preferred_ink')
+        self.assertIsNone(routed['selected_method'])
+        self.assertIn('anchor_without_ink',routed['samples'][2]['flags'])
+        self.assertTrue(any(abs(point[1]-60)<=1 for point in routed['samples'][2]['candidates']))
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp);Image.fromarray(rgb).save(p/'figure.png')
+            job={'sources':{'s':{'image':'figure.png'}},'panels':{'a':{'source':'s','bounds':[1,1,108,108],
+                  'axis':{'coordinate':'y','ticks':[[10,100],[90,0]],'unit':'%'}}},'traces':[t]}
+            write_json(p/'job.json',job)
+            result=run(p/'job.json',p/'auto')
+            review=read_json(result['job'])
+            self.assertTrue(any('anchor_without_ink' in item['flags'] for item in review['items']))
+            self.assertGreater(len(review['items']),0)
 
     def test_end_to_end_preserves_image_and_connects_review(self):
         with tempfile.TemporaryDirectory() as tmp:

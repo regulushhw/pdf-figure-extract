@@ -3,6 +3,8 @@
 No eval, shell commands, executable plugins, network calls or model calls.
 `serve` holds Windows read-only handles on tool code until quit. This protects
 the tool directory during the session, not other Agent tools or the whole OS.
+Point corrections use action `drag` or tools/drag_points.py: one command redraws
+the numbered overlay and the live point table. No handwritten decision file.
 """
 import argparse
 import contextlib
@@ -28,7 +30,7 @@ EXTRACTORS = {'vector_bars': 'extract_bars.py', 'vector_lines': 'extract_lines.p
 EXTERNAL = {'unplotter_csv', 'chartdetective_csv', 'webplotdigitizer_csv'}
 METHODS = set(EXTRACTORS) | EXTERNAL | {'review_candidates'}
 ACTIONS = {'status', 'scan', 'trial', 'approve', 'run', 'inspect', 'edit', 'undo',
-           'review', 'apply', 'accept', 'draft', 'save', 'verify'}
+           'review', 'apply', 'accept', 'draft', 'save', 'verify', 'drag'}
 
 
 def read(path):
@@ -366,14 +368,21 @@ class Runner:
         return {'status': 'saved_checks_passed' if action == 'save' else 'declared_checks_passed',
                 'workbook': str(target), 'images': list(map(str, folder.glob('A*_preview_*.png')))}
 
-    def point_action(self,action,part,record,job,decision,batch,points,regions,view_mode='points'):
-        from review_points import load_job,load_result,summary,inspect_points,edit_points
-        start=time.perf_counter();state=self.state['parts'][part['id']]
+    def load_points(self,part,job):
+        from review_points import load_job,load_result
+        state=self.state['parts'][part['id']]
         prior=state.get('result')
         if prior:self.checked_result(prior)
         jp,j,sources,panels=load_job(job)
         result=load_result(jp,j,sources,panels,prior['file'] if prior else None)
         revision=prior['sha256'] if prior else digest(result)
+        return state,prior,jp,j,sources,panels,result,revision
+
+    def point_action(self,action,part,record,job,decision,batch,points,regions,view_mode='points',redraw=True):
+        from review_points import load_result,summary,inspect_points,edit_points
+        start=time.perf_counter()
+        state,prior,jp,j,sources,panels,result,revision=self.load_points(part,job)
+        if action=='inspect':redraw=True
         if not hasattr(self,'_point_images'):self._point_images={}
         images=self._point_images.setdefault(part['id'],{})
         ghosts=[];undo_frame=None
@@ -404,9 +413,14 @@ class Runner:
             target=self.output(f'results/{part["id"]}_{time.time_ns()}.json');target.parent.mkdir(exist_ok=True)
             write(target,result);revision=sha(target)
         render_start=time.perf_counter()
-        folder=self.output(f'point_views/{part["id"]}/{time.time_ns()}')
-        view=inspect_points(result,folder,revision,affected,regions,images,ghosts,view_mode)
-        render_seconds=time.perf_counter()-render_start
+        if redraw:
+            folder=self.output(f'point_views/{part["id"]}/{time.time_ns()}')
+            view=inspect_points(result,folder,revision,affected,regions,images,ghosts,view_mode)
+            render_seconds=time.perf_counter()-render_start
+        else:
+            view={'view':None,'images':[],'image_hashes':{},'revision':revision,'views':[],'points':[],
+                  'decision_template':None}
+            render_seconds=0.0
         if action!='inspect':
             if action=='undo':state['point_undo'].pop()
             else:state.setdefault('point_undo',[]).append({'previous':prior,'affected':affected})
@@ -418,6 +432,10 @@ class Runner:
         return {**view,'summary':summary(result),'operation_seconds':round(time.perf_counter()-start,4),
                 'render_seconds':round(render_seconds,4),'extraction_executions':self.state['executions'],
                 'result':state.get('result'),'scope':'point data edited; no extraction rerun or workbook write'}
+
+    def drag(self,request):
+        from drag_points import perform_drag
+        return perform_drag(self,request)
 
     def execute(self, action, part_id=None, decision=None, batch=None, points=None, regions=None, view_mode='points'):
         if action not in ACTIONS:
@@ -489,14 +507,22 @@ class Runner:
         try:
             if digest({str(p.relative_to(TOOLS)):sha(p) for p in code_files()}) != self.state['tools']:
                 raise ValueError('tool code changed during session; maintenance requires a new task')
-            if set(request) - {'action', 'part', 'decision', 'batch', 'points', 'regions','view_mode'}:
+            allowed={'action','part','decision','batch','points','regions','view_mode'}
+            drag_keys={'command','target','role','pixel','data','x','y','panel','series','box','pad','zoom','source','targets'}
+            extra=set(request)-allowed
+            if request.get('action')=='drag':
+                if extra-drag_keys:raise ValueError('unknown drag field')
+            elif extra:
                 raise ValueError('only fixed action/part/decision/batch/points/regions/view_mode fields permitted')
             if request.get('view_mode','points') not in ('points','objects','objects_full'):
                 raise ValueError('view_mode must be points, objects or objects_full')
             if 'view_mode' in request and request['action'] not in ('inspect','edit'):
                 raise ValueError('view_mode is only supported for inspect/edit')
-            result = self.execute(request['action'], request.get('part'), request.get('decision'), request.get('batch'),
-                                  request.get('points'),request.get('regions'),request.get('view_mode','points'))
+            if request.get('action')=='drag':
+                result=self.drag(request)
+            else:
+                result = self.execute(request['action'], request.get('part'), request.get('decision'), request.get('batch'),
+                                      request.get('points'),request.get('regions'),request.get('view_mode','points'))
             write(self.state_path, self.state)
             # Keep stdout compact; full state/records remain on disk.
             if request['action'] == 'status':
