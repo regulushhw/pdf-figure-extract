@@ -23,7 +23,7 @@ python tools/drag_points.py task.json delete --part panel_a 4
 python tools/drag_points.py task.json undo --part panel_a
 ```
 
-图例里有几条系列，输出就要有几条。点互相重叠时不要并成一条：
+图例系列分别记录。只有原图或可靠来源能确认对应点确实重合时，才复制读数；仅因遮挡或分辨率不足无法区分时，记录“未能分辨”，不要复制其他系列：
 
 ```text
 python tools/drag_points.py task.json copy-series --part panel_a --from "50 mg/L" --to "100 mg/L" --to "150 mg/L"
