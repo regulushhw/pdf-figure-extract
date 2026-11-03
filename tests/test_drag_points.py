@@ -230,5 +230,26 @@ class DragTests(unittest.TestCase):
         self.assertEqual(reply['points'][0]['id'], 'p0')
 
 
+class CoincidentSeriesTests(unittest.TestCase):
+    def test_copy_repeats_each_point_and_flags_the_other_series(self):
+        from drag_points import copy_coincident
+        result = {'items': [{
+            'id': 't1', 'panel': 'b', 'identity': {'series': '50 mg/L'},
+            'anchor': [10, 20], 'roles': {'value': {'pixel': [10, 20], 'value': 1.5, 'status': 'automatic_candidate'}},
+            'flags': [],
+        }], 'history': []}
+        created = copy_coincident(result, '50 mg/L', ['100 mg/L', '150 mg/L'])
+        self.assertEqual(len(created), 2)
+        self.assertEqual(len(result['items']), 3)
+        by_series = {item['identity']['series']: item for item in result['items']}
+        self.assertEqual(by_series['100 mg/L']['roles'], by_series['50 mg/L']['roles'])
+        self.assertEqual(by_series['50 mg/L']['coincident_with'], ['100 mg/L', '150 mg/L'])
+        self.assertEqual(by_series['100 mg/L']['coincident_with'], ['50 mg/L', '150 mg/L'])
+        self.assertTrue(by_series['150 mg/L']['added_by_edit'])
+        self.assertIn('coincident_with=50 mg/L;100 mg/L', by_series['150 mg/L']['flags'])
+        with self.assertRaises(ValueError):
+            copy_coincident(result, '50 mg/L', ['100 mg/L'])
+
+
 if __name__ == '__main__':
     unittest.main()

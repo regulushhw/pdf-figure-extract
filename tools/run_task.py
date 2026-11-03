@@ -508,7 +508,7 @@ class Runner:
             if digest({str(p.relative_to(TOOLS)):sha(p) for p in code_files()}) != self.state['tools']:
                 raise ValueError('tool code changed during session; maintenance requires a new task')
             allowed={'action','part','decision','batch','points','regions','view_mode'}
-            drag_keys={'command','target','role','pixel','data','x','y','panel','series','box','pad','zoom'}
+            drag_keys={'command','target','role','pixel','data','x','y','panel','series','box','pad','zoom','source','targets'}
             extra=set(request)-allowed
             if request.get('action')=='drag':
                 if extra-drag_keys:raise ValueError('unknown drag field')

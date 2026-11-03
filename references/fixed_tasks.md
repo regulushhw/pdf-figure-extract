@@ -23,6 +23,14 @@ python tools/drag_points.py task.json delete --part panel_a 4
 python tools/drag_points.py task.json undo --part panel_a
 ```
 
+图例里有几条系列，输出就要有几条。点互相重叠时不要并成一条：
+
+```text
+python tools/drag_points.py task.json copy-series --part panel_a --from "50 mg/L" --to "100 mg/L" --to "150 mg/L"
+```
+
+每条图例系列各有一行，坐标与数值相同，叠图标签和 `points.xlsx` / `points.csv` 都写 `coincident_with=` 其余系列。这是同一处读数的重复登记，不是再测一次。
+
 `3` 是叠图编号，也可以写点的 id。编号在增删之后会重排，id 不变；每次返回里都有当前编号对照。move / add 的落点必须在刚看过的叠图内，超出就先 zoom 或 show。zoom 用最近邻放大，边长最多 220 个源像素，用来看清粗标记和误差线。环境科学图大多是扫描或内嵌位图；矢量提取没有路径时改用 `bitmap_points` / `bitmap_lines`（或已有 `review_candidates`）再拖点。锚点列没有选定墨迹时，追踪记为 `anchor_without_ink`，其余采样点仍可拖。
 
 已经开着 serve 时，不要再对同一 work_dir 跑上面的命令。把同样的字段写成一行 JSON 送进 worker，不必附 revision、图像摘要或决策文件：

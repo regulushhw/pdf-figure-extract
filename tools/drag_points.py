@@ -8,6 +8,7 @@ python tools/drag_points.py task.json move --part panel_a 3 --data 12.5
 python tools/drag_points.py task.json add --part panel_a new-id --panel a --series Observed --pixel 30 45
 python tools/drag_points.py task.json delete --part panel_a 4
 python tools/drag_points.py task.json undo --part panel_a
+python tools/drag_points.py task.json copy-series --part panel_a --from "50 mg/L" --to "100 mg/L" --to "150 mg/L"
 
 Each command prints one JSON object. `overlay` is the picture to look at.
 `table` / `csv` are the live point table (not the delivery workbook).
@@ -22,9 +23,11 @@ Do not run this CLI against a work_dir while that serve process is mid-command.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 import math
+import re
 import sys
 import time
 from pathlib import Path
@@ -42,6 +45,7 @@ FIELDS = {
     'add': {'target', 'pixel', 'data', 'x', 'y', 'panel', 'series', 'role'},
     'delete': {'target', 'role'},
     'undo': set(),
+    'copy-series': {'source', 'targets'},
 }
 
 TABLE_NOTE = (
@@ -233,7 +237,7 @@ def mark_visible(rows, boxes):
 def write_tables(folder, rows, meta):
     folder.mkdir(parents=True, exist_ok=True)
     fields = ['n', 'id', 'role', 'panel', 'series', 'pixel_x', 'pixel_y', 'value', 'unit',
-              'axis', 'status', 'in_view', 'identity']
+              'axis', 'status', 'in_view', 'coincident_with', 'identity']
     csv_path = folder / 'points.csv'
     with csv_path.open('w', encoding='utf-8', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
@@ -245,6 +249,7 @@ def write_tables(folder, rows, meta):
                 'series': row['series'], 'pixel_x': pixel[0], 'pixel_y': pixel[1],
                 'value': row['value'], 'unit': row['unit'], 'axis': row['axis'],
                 'status': row['status'], 'in_view': row['in_view'],
+                'coincident_with': row.get('coincident_with') or '',
                 'identity': json.dumps(row['identity'], ensure_ascii=False),
             })
     xlsx_path = folder / 'points.xlsx'
@@ -256,11 +261,11 @@ def write_tables(folder, rows, meta):
         pixel = row['pixel'] or [None, None]
         sheet.append([row['n'], row['id'], row['role'], row['panel'], row['series'],
                       pixel[0], pixel[1], row['value'], row['unit'], row['axis'],
-                      row['status'], bool(row['in_view']),
+                      row['status'], bool(row['in_view']), row.get('coincident_with') or '',
                       json.dumps(row['identity'], ensure_ascii=False)])
     sheet.freeze_panes = 'A2'
     sheet.auto_filter.ref = sheet.dimensions
-    for column, width in zip('ABCDEFGHIJKLM', (6, 24, 14, 12, 18, 12, 12, 14, 10, 8, 22, 12, 40)):
+    for column, width in zip('ABCDEFGHIJKLMN', (6, 24, 14, 12, 18, 12, 12, 14, 10, 8, 22, 12, 28, 40)):
         sheet.column_dimensions[column].width = width
     note = book.create_sheet('note')
     note['A1'] = TABLE_NOTE
@@ -396,6 +401,77 @@ def left_view(rows, ident, role):
     return None
 
 
+def series_id(name):
+    slug = re.sub(r'[^A-Za-z0-9]+', '_', name).strip('_')
+    if not slug:
+        raise ValueError('series name needs at least one letter or digit')
+    return slug
+
+
+def copy_coincident(result, source_name, target_names):
+    """Repeat one series onto legend series that share the same marks.
+
+    Values are copied, not remeasured. Each copy is its own row and is flagged
+    coincident_with the other series. This does not merge series or drop one.
+    """
+    if not isinstance(source_name, str) or not source_name.strip():
+        raise ValueError('copy-series needs --from, the series you already measured')
+    source_name = source_name.strip()
+    if not target_names or not isinstance(target_names, (list, tuple)):
+        raise ValueError('copy-series needs at least one --to series from the legend')
+    targets = []
+    for name in target_names:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError('each --to series needs a name')
+        name = name.strip()
+        if name in targets:
+            raise ValueError(f'duplicate --to series {name}')
+        targets.append(name)
+    if source_name in targets:
+        raise ValueError('a series cannot be copied onto itself')
+    present = {(item.get('identity') or {}).get('series') for item in result['items']}
+    already = [name for name in targets if name in present]
+    if already:
+        raise ValueError('series already present, not overwritten: ' + ', '.join(already))
+    sources = [item for item in result['items'] if (item.get('identity') or {}).get('series') == source_name]
+    if not sources:
+        raise ValueError(f'no points with series {source_name}')
+    ids = {item['id'] for item in result['items']}
+    group = [source_name, *targets]
+    created = []
+    for name in targets:
+        others = [item for item in group if item != name]
+        for item in sources:
+            clone = copy.deepcopy(item)
+            clone['id'] = f"{item['id']}__{series_id(name)}"
+            if clone['id'] in ids:
+                raise ValueError(f"point id {clone['id']} already exists")
+            ids.add(clone['id'])
+            clone['identity'] = {**(item.get('identity') or {}), 'series': name}
+            clone['added_by_edit'] = True
+            clone['coincident_with'] = others
+            flags = list(clone.get('flags') or [])
+            flags.append('coincident_with=' + ';'.join(others))
+            clone['flags'] = flags
+            result['items'].append(clone)
+            created.append(clone['id'])
+    for item in sources:
+        others = [name for name in group if name != source_name]
+        item['coincident_with'] = others
+        flags = list(item.get('flags') or [])
+        flags.append('coincident_with=' + ';'.join(others))
+        item['flags'] = flags
+    result['history'].append({
+        'kind': 'copy_coincident_series',
+        'source': source_name,
+        'targets': targets,
+        'ids': created,
+        'note': 'same measured point kept once per legend series; not a second reading',
+    })
+    result['summary'] = summary(result)
+    return created
+
+
 def perform_drag(runner, request):
     command = request.get('command')
     if command not in FIELDS:
@@ -418,6 +494,21 @@ def perform_drag(runner, request):
     if command in ('show', 'zoom'):
         boxes, zoom = region_for(command, request, result, panels)
         return publish(runner, part_id, result, revision, boxes, zoom, command)
+    if command == 'copy-series':
+        copy_coincident(result, request.get('source'), request.get('targets'))
+        target = runner.output(f'results/{part_id}_{time.time_ns()}.json')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        write(target, result)
+        new_revision = sha(target)
+        state = runner.state['parts'][part_id]
+        state.setdefault('point_undo', []).append({'previous': _prior, 'affected': [
+            {'id': item['id'], 'role': role} for item in result['items'] if item.get('added_by_edit')
+            for role in item['roles']]})
+        state['result'] = {'file': str(target), 'sha256': new_revision}
+        state.pop('pending_review', None)
+        state.pop('run_approval', None)
+        boxes, zoom = region_for('show', request, result, panels)
+        return publish(runner, part_id, result, new_revision, boxes, zoom, command, record=record)
     if command == 'undo':
         decision = runner.output(f'drag/{part_id}/decision.json')
         decision.parent.mkdir(parents=True, exist_ok=True)
@@ -524,6 +615,9 @@ def build_parser():
     delete.add_argument('target')
     delete.add_argument('--role')
     commands.add_parser('undo', parents=[common])
+    copy_cmd = commands.add_parser('copy-series', parents=[common])
+    copy_cmd.add_argument('--from', dest='source', required=True)
+    copy_cmd.add_argument('--to', dest='targets', action='append', required=True)
     return parser
 
 
@@ -561,6 +655,9 @@ def specification(args):
     elif args.command == 'delete':
         put('target', args.target)
         put('role', args.role)
+    elif args.command == 'copy-series':
+        put('source', args.source)
+        spec['targets'] = list(args.targets)
     return spec
 
 

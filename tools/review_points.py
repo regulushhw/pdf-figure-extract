@@ -205,8 +205,18 @@ def point_catalog(result):
                 "axis": calibration.get("coordinate"),
                 "status": state.get("status"),
                 "in_view": False,
+                "coincident_with": format_coincident(item.get("coincident_with")),
             })
     return rows
+
+
+def format_coincident(value):
+    """Series names that share this point. Empty when the point is not a copy."""
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value
+    return ";".join(str(name) for name in value)
 
 
 def font(size):
@@ -420,11 +430,12 @@ def render_numbered_overlay(result, path, boxes, rows, zoom=None):
     legend_font = font(13)
     legend_items = []
     visible = [row for row in rows if row.get("in_view")]
-    for row in visible[:24]:
+    for row in visible[:60]:
         value = "missing" if row["value"] is None else f"{row['value']:.4g}{row['unit'] or ''}"
-        legend_items.append(f"{row['n']} {row['id']} {value}")
-    if len(visible) > 24:
-        legend_items.append(f"+{len(visible) - 24} more in the point table")
+        shared = f" coincident_with={row['coincident_with']}" if row.get("coincident_with") else ""
+        legend_items.append(f"{row['n']} {row.get('series') or row['id']} {value}{shared}")
+    if len(visible) > 60:
+        legend_items.append(f"+{len(visible) - 60} more in the point table")
     if not legend_items:
         legend_items.append("no digitized points in this crop")
     legend_lines, current = [], ""
@@ -494,30 +505,36 @@ def render_numbered_overlay(result, path, boxes, rows, zoom=None):
             y += step
         draw.rectangle((left, top, right, bottom), outline=(40, 40, 40))
         arm = max(6, round(4 * max(scale_x, 1)))
+        stacked = {}
         for row in rows:
             if row["panel"] != tile["panel"] or not row.get("in_view"):
                 continue
             loc = row["pixel"] or row["anchor"]
             ix, iy = output_xy(loc, tile["bounds"], origin, scale_x, scale_y)
-            if row["pixel"] is None:
-                draw.ellipse((ix - 6, iy - 6, ix + 6, iy + 6), outline=(90, 90, 90), width=2)
-            else:
-                draw.line((ix - arm, iy, ix + arm, iy), fill=(255, 255, 255), width=5)
-                draw.line((ix, iy - arm, ix, iy + arm), fill=(255, 255, 255), width=5)
-                draw.line((ix - arm, iy, ix + arm, iy), fill=(220, 30, 30), width=2)
-                draw.line((ix, iy - arm, ix, iy + arm), fill=(220, 30, 30), width=2)
-                draw.rectangle((ix - 1, iy - 1, ix + 1, iy + 1), fill=(220, 30, 30))
-            label = f"{row['n']} {row['id']}" + ("" if row["role"] == "value" else f"/{row['role']}")
+            slot = stacked.get((ix, iy), 0)
+            stacked[(ix, iy)] = slot + 1
+            if slot == 0:
+                if row["pixel"] is None:
+                    draw.ellipse((ix - 6, iy - 6, ix + 6, iy + 6), outline=(90, 90, 90), width=2)
+                else:
+                    draw.line((ix - arm, iy, ix + arm, iy), fill=(255, 255, 255), width=5)
+                    draw.line((ix, iy - arm, ix, iy + arm), fill=(255, 255, 255), width=5)
+                    draw.line((ix - arm, iy, ix + arm, iy), fill=(220, 30, 30), width=2)
+                    draw.line((ix, iy - arm, ix, iy + arm), fill=(220, 30, 30), width=2)
+                    draw.rectangle((ix - 1, iy - 1, ix + 1, iy + 1), fill=(220, 30, 30))
+            label = f"{row['n']} {row.get('series') or row['id']}"
+            if row.get("coincident_with"):
+                label += f" ={row['coincident_with']}"
             if row["pixel"] is None:
                 label += " missing"
-            if len(label) > 22:
-                label = str(row["n"])
+            if len(label) > 42:
+                label = f"{row['n']} {row.get('series') or row['id']}"
             tw, th = _text_size(draw, label, label_font)
-            lx, ly = ix + arm + 3, iy - th - 4
+            lx, ly = ix + arm + 3, iy - th - 4 + slot * (th + 5)
             if lx + tw + 8 > canvas_w - 4:
-                lx = ix - arm - tw - 8
+                lx = max(4, ix - arm - tw - 8)
             if ly < origin[1]:
-                ly = iy + arm + 2
+                ly = iy + arm + 2 + slot * (th + 5)
             draw.rectangle((lx - 2, ly - 1, lx + tw + 3, ly + th + 2), fill=(255, 255, 255), outline=(0, 0, 0))
             draw.text((lx, ly), label, font=label_font, fill=(0, 0, 0))
         placement_panels.append({
