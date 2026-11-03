@@ -61,7 +61,7 @@ python tools/ocr_assist.py confirm analysis.json 确认.json 确认配置.json
 - 当前标定只支持线性轴；重复/不足刻度、残差冲突须处理，不通过放宽容差自动过关。两点拟合通过不证明轴线性。
 - Windows返回非零TextAngle时，边界框属于倾斜校正坐标；模块保留告警并阻止这些坐标直接标定，未实现任意角度纠偏。
 - 小字、粘连、指数/上下标、复杂单位、整页多面板仍可能漏读；正则分组不等于语义识别。已确认的数字和未知标签分开记录。
-- 真实测试使用本机Windows英语引擎及A2嵌入位图；Tesseract TSV接口经过合成解析测试，未声称本机安装并运行Tesseract，也未证明中文/所有扫描件准确率。
+- Windows OCR 可用于已安装语言；Tesseract TSV接口经过合成解析测试，未声称本机安装并运行Tesseract，也未证明中文/所有扫描件准确率。
 
 运行`FIGURE_OCR_INTEGRATION=1`环境下的`python -X utf8 -B tests/test_ocr_assist.py`可包含真实Windows识别测试；未设置时该项跳过。测试只用合成图片/PDF。复核生成器用tests/test_prepare_task.py。
 
