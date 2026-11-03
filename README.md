@@ -90,6 +90,8 @@ Remove-Item Env:SRDP_TASK_DIR
 
 `tools/review_points.py`把已有脚本的候选读数接成“批量提议→少量局部看图→坐标修正→自动换算与回叠”的循环。支持源图坐标及放大检查图坐标回填、按摘要拦截过期批次、完整清单接续。默认只安排异常与部分稳定候选抽查；抽查通过不会把未看的点升级为已核验，也不会镜像补另一端或将缺值填0。详见[接口与调用示例](references/agent_review.md)。合成行为测试：`python tests/test_agent_review.py`。它不是新的自动图型检测器，实际看图仍消耗Agent额度。
 
+错点的日常改法是 `python tools/drag_points.py task.json show --part …`，然后 `move` / `add` / `delete` / `undo`。每条命令重画带编号和源像素网格的叠图，并更新该 part 的 `points.xlsx` 与 `points.csv`（过程表，不是交付底稿）。`--data` 按已有线性标定移动一个轴，调用方不必手写像素换算或决策 JSON。小标记用 `zoom`。批量 inspect/edit 仍在，一次最多 12 个操作。合成测试：`python tests/test_drag_points.py`。
+
 ## 验证范围
 
 `verify`的`checked_value_types`分别统计契约内的数字、空白、文本和布尔值；检查格数不是有效数值数。`<0.001`等p值文本须显式加入契约，不能因它不是Excel数值类型而省略。`review_points`将不同角色位于同一像素附近的自动候选送回看图；它是检查提示，真正重合仍可保留共同读数。
@@ -198,7 +200,7 @@ Remove-Item Env:SRDP_TASK_DIR
 
 ## 自动选方法入口（连续位图曲线）
 
-通常先用`python tools/auto_trace_bitmap.py trace_job.json new_output_dir`，输入与`trace_bitmap.py`相同。脚本批量执行按列路径和严格墨迹图路径；两者都不连通时，对灰度目标再试有限暗色遮挡路径，无需逐次换脚本。仍须由Agent先确认图例身份、ROI、标定和锚点；本入口不自动解析整篇论文或读取图例。
+通常先用`python tools/auto_trace_bitmap.py trace_job.json new_output_dir`，输入与`trace_bitmap.py`相同。脚本批量执行按列路径和严格墨迹图路径；两者都不连通时，对灰度目标再试有限暗色遮挡路径，无需逐次换脚本。锚点所在列没有选定墨迹时不再中断整次追踪，该列记为`anchor_without_ink`，其余采样点仍给出候选，缺的位置用拖点补。仍须由Agent先确认图例身份、ROI、标定和锚点；本入口不自动解析整篇论文或读取图例。
 
 顺序与保护：
 

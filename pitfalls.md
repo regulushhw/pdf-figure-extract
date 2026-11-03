@@ -20,6 +20,8 @@
 | Windows路径含中文，JSON按系统GBK回读失败 | 显式UTF-8读写；测试PDF使用中文文件名，保留真实CLI证据检查 | test_filled_quad_dashes_real_pdf_cli及中文过程目录回归 |
 | 契约范围外存在空公式缓存或错误缓存 | verify/audit同时检查整本公式缓存；仍需最后保存后的算术核对，空缓存也可能是有意空串，须由计算引擎确认，不能静默算通过 | 缓存范围外缺失、有效缓存与错误缓存三项合成样例 |
 | 空检查或只检查一部分数值 | verify拒绝空清单、漏检、重复和越界；范围由任务与底稿确定，不能缩小来通过 | verify相关合成样例 |
+| 粗标记加误差线时，整段竖向墨迹的中点被不对称误差线拉离标记，读数系统性偏离 | 竖茎明显细于中间色块时，候选改用色块中心，并标记 marker_center_not_error_bar_span；对称误差线或均匀笔画仍用墨迹中点。剩余偏差用拖点改正，不放宽阈值。未在 PLOS ONE 原图上复核 | tests/test_bitmap_points.py::test_asymmetric_error_bar_uses_marker_center |
+| 锚点列没有选定墨迹时 auto_trace 抛出 anchor has no ink support，后面的采样点无法进入拖点 | 该锚点记为 anchor_without_ink，其余列仍给出候选。锚点本身不在墨迹上不再中断整条任务 | tests/test_auto_trace.py::test_anchor_without_ink_stays_reviewable |
 
 | 多面板柱图叠加只剩最后面板 | 全部面板累积标记，并比较标记数与实际提取数；叠图仍须人工查看 | 双面板柱图样例 |
 

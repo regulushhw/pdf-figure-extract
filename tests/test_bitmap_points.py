@@ -8,7 +8,7 @@ from PIL import Image,ImageDraw
 import numpy as np
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
-from propose_bitmap_points import propose,locate_bar_groups
+from propose_bitmap_points import propose,locate_bar_groups,marker_center_y
 from review_points import read_json,write_json,prepare
 
 
@@ -101,6 +101,38 @@ class BitmapTests(unittest.TestCase):
             with self.assertRaises(ValueError):locate_bar_groups(mask,**args)
         with self.assertRaises(ValueError):
             locate_bar_groups(mask.astype('uint8'),row=10,left=1,right=98,expected_count=1)
+
+    def test_asymmetric_error_bar_uses_marker_center(self):
+        rgb=np.full((100,100,3),255,np.uint8)
+        rgb[34:47,44:57]=0
+        rgb[16:81,50:51]=0
+        Image.fromarray(rgb).save(self.root/'figure.png')
+        self.job['items'][0]['anchor']=[50,40]
+        self.job['items'][0]['roi']=[5,5,94,94]
+        job,_=self.run_propose('marker')
+        points=job['items'][0]['roles']['value']
+        self.assertEqual(len(points),1)
+        self.assertAlmostEqual(points[0][0],50)
+        self.assertAlmostEqual(points[0][1],40,delta=1)
+        self.assertLess(abs(points[0][1]-40),abs(points[0][1]-48))
+        self.assertIn('marker_center_not_error_bar_span',job['items'][0]['flags'])
+        self.assertIn('marker_y',job['items'][0]['proposal_evidence']['runs'][0])
+
+    def test_symmetric_stem_and_uniform_bar_keep_the_run_center(self):
+        rgb=np.full((100,100,3),255,np.uint8)
+        rgb[34:47,44:57]=0
+        rgb[28:53,50:51]=0
+        Image.fromarray(rgb).save(self.root/'figure.png')
+        self.job['items'][0]['anchor']=[50,40]
+        self.job['items'][0]['roi']=[5,5,94,94]
+        job,_=self.run_propose('symmetric')
+        point=job['items'][0]['roles']['value'][0]
+        self.assertAlmostEqual(point[1],40,delta=1)
+        self.assertNotIn('marker_center_not_error_bar_span',job['items'][0]['flags'])
+        mask=np.zeros((100,100),dtype=bool)
+        mask[20:80,48:53]=True
+        self.assertIsNone(marker_center_y(mask,50,20,79))
+        self.assertIsNone(marker_center_y(mask,50,30,33))
 
 
 if __name__=='__main__':unittest.main()

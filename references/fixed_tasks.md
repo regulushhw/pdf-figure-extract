@@ -6,9 +6,36 @@
 
 日常过程只填写JSON、运行入口和看图；新增能力另作维护。入口复用原工具，不会自动解释图例、校准任意坐标或决定研究取样。其完成状态只覆盖声明的任务，不表示整篇论文已完成。
 
+## 拖点修正
+
+错点不要重调提取参数，也不要新写提取代码。程序画出带编号、id 和坐标网格的叠图；看图后每次一条命令。命令结束会重画叠图，并更新该 part 的 `points.xlsx` 与 `points.csv`。这是过程表，不是交付底稿；交付仍走 accept / draft / save。
+
+网格数字是源图像素（左上原点，y 向下），不是 PNG 里的位置。括号里是已标定那一轴的数据值。`--data` 只移动这一轴，另一轴保持原像素。
+
+```text
+python tools/drag_points.py task.json show --part panel_a
+python tools/drag_points.py task.json zoom --part panel_a 3
+python tools/drag_points.py task.json zoom --part panel_a --box 100,40,180,120 --panel a
+python tools/drag_points.py task.json move --part panel_a 3 --pixel 120 64
+python tools/drag_points.py task.json move --part panel_a 3 --data 12.5
+python tools/drag_points.py task.json add --part panel_a new-id --panel a --series 图例系列 --pixel 30 45
+python tools/drag_points.py task.json delete --part panel_a 4
+python tools/drag_points.py task.json undo --part panel_a
+```
+
+`3` 是叠图编号，也可以写点的 id。编号在增删之后会重排，id 不变；每次返回里都有当前编号对照。move / add 的落点必须在刚看过的叠图内，超出就先 zoom 或 show。zoom 用最近邻放大，边长最多 220 个源像素，用来看清粗标记和误差线。环境科学图大多是扫描或内嵌位图；矢量提取没有路径时改用 `bitmap_points` / `bitmap_lines`（或已有 `review_candidates`）再拖点。锚点列没有选定墨迹时，追踪记为 `anchor_without_ink`，其余采样点仍可拖。
+
+已经开着 serve 时，不要再对同一 work_dir 跑上面的命令。把同样的字段写成一行 JSON 送进 worker，不必附 revision、图像摘要或决策文件：
+
+```json
+{"action":"drag","part":"panel_a","command":"move","target":"3","data":12.5}
+```
+
+`command` 为 show、zoom、move、add、delete、undo。一次要改多个点时，再用下面的批量接口。
+
 ## 日常主线：一次提取，批量改点
 
-使用下文serve保持一个worker。trial→实际看图→approve→run之后，所有位图检测器统一使用inspect/edit/undo，再accept和保存；旧review/apply仅供历史契约接续。
+使用下文serve保持一个worker。trial→实际看图→approve→run之后，用上面的拖点命令修正；需要一次改最多 12 个点时再用 inspect/edit/undo，然后 accept 和保存。旧review/apply仅供历史契约接续。
 
 ```json
 {"action":"inspect","part":"panel_a","points":[{"id":"curve-120","role":"value"}]}
@@ -103,7 +130,8 @@ python tools/run_task.py task.json serve
 | 试读 | `{"action":"trial","part":"panel_a"}` | fingerprint、检查图和结果目录，仍是未复核候选 |
 | 确认试读 | `{"action":"approve","part":"panel_a","decision":"trial_decision.json"}` | 校验当前图片、身份与范围的明确查看声明 |
 | 展开 | `{"action":"run","part":"panel_a"}` | 未确认试读拒绝；全量job改变使旧确认失效 |
-| 查看点/区域 | `{"action":"inspect","part":"panel_a"}` | 主流程；返回当前局部图、坐标、revision及图片摘要 |
+| 拖点 | `{"action":"drag","part":"panel_a","command":"show"}` | 编号叠图、源像素网格和过程表；move/add/delete/undo 不重跑提取 |
+| 查看点/区域 | `{"action":"inspect","part":"panel_a"}` | 批量接口；返回当前局部图、坐标、revision及图片摘要 |
 | 批量改点 | `{"action":"edit","part":"panel_a","batch":"view.json","decision":"edits.json"}` | 主流程；只改数据和局部图，不重跑提取 |
 | 撤销上一批 | `{"action":"undo","part":"panel_a","decision":"undo.json"}` | 恢复前版并给局部图，保留版本历史 |
 | 局部复核 | `{"action":"review","part":"panel_a"}` | 沿用已有队列，默认一次1对象、稳定区每20抽1；重复请求复用未处理批次 |

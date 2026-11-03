@@ -1,6 +1,6 @@
 # 脚本批处理与 Agent 看图接口
 
-日常统一走固定入口的[inspect/edit/undo](fixed_tasks.md#日常主线一次提取批量改点)，直接复用本文件的数据与渲染契约。下述prepare/apply保留为历史兼容接口，不作为新任务每个点重新建批次的主线。
+日常纠错走固定入口的[拖点命令](fixed_tasks.md#拖点修正)：程序画编号和坐标网格，一条 move/add/delete/undo 之后自动重画并更新过程表。需要一次改多个点时再用[inspect/edit/undo](fixed_tasks.md#日常主线一次提取批量改点)，数据与渲染契约仍是本文件。下述prepare/apply保留为历史兼容接口，不作为新任务每个点重新建批次的主线。
 
 需要整根柱/须线及同组上下文时，用固定入口的`view_mode=objects`自动生成整对象原图/回叠图；用返回的空白决定模板和`set_axis`回填一维源像素位置。已有review_job可用`review_candidates`直接接续，不重跑检测；具体边界见[整根图元检查](fixed_tasks.md#区间柱组等需要整根图元时)。
 
