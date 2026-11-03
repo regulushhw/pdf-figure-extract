@@ -15,7 +15,7 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 from drag_points import main
-from review_points import axis_fit, data_to_pixel, output_xy, value_at
+from review_points import axis_fit, data_to_pixel, output_xy, overlay_scale, value_at
 from run_task import Runner, read, sha, write
 
 
@@ -30,6 +30,14 @@ class AxisMathTests(unittest.TestCase):
         self.assertAlmostEqual(moved[1], 90)
         with self.assertRaises(ValueError):
             data_to_pixel([3, 5], calibration, True)
+
+    def test_large_panel_overview_shrinks_and_small_crops_enlarge(self):
+        scale = overlay_scale(2880, 2320)
+        self.assertLess(scale, 1)
+        self.assertGreater(scale * 2880, 900)
+        self.assertLess(scale * 2880, 1300)
+        self.assertGreaterEqual(overlay_scale(98, 98), 2)
+        self.assertEqual(overlay_scale(120, 80, zoom=6), 6)
 
 
 class DragTests(unittest.TestCase):

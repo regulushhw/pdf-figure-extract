@@ -314,16 +314,23 @@ def render_sheet(items, sources, panels, path, zoom=3, columns=3, context=False,
 
 
 def overlay_scale(width, height, zoom=None):
-    """Overview fits the long side near 900px. Explicit zoom stays nearest-neighbor and <= 8."""
+    """Overview keeps the long side near 1100px, including panels larger than that.
+
+    Small crops are enlarged (at most 6x) so ticks stay readable. Explicit zoom
+    is nearest-neighbor and stays between 1 and 8. A floor of 1 would leave a
+    full journal figure at several thousand pixels, which the overview cannot show.
+    """
     long_side = max(1, int(width), int(height))
-    if zoom is None:
-        scale = min(6.0, max(1.0, 900.0 / long_side))
-        if scale >= 2:
-            scale = float(int(scale))
+    if zoom is not None:
+        scale = float(zoom)
+        if not 1 <= scale <= 8:
+            raise ValueError("zoom must be between 1 and 8")
         return scale
-    scale = float(zoom)
-    if not 1 <= scale <= 8:
-        raise ValueError("zoom must be between 1 and 8")
+    scale = 1100.0 / long_side
+    if scale >= 2:
+        return float(min(6, int(scale)))
+    if scale > 1:
+        return 1.0
     return scale
 
 
@@ -389,7 +396,26 @@ def render_numbered_overlay(result, path, boxes, rows, zoom=None):
         item["image"] = resized
         item["step"] = grid_step(max(crop.width, crop.height))
         tiles.append(item)
-    margin_l, margin_r, title_h, axis_h = 112, 16, 26, 36
+    margin_r, title_h, axis_h = 16, 26, 36
+    # Source-pixel labels on a journal figure are long ("4500 (12.3%)").
+    # Measure them before choosing the gutter, or the first digits are clipped.
+    probe_font = font(12)
+
+    def tick_label(calibration, source_value, along):
+        text = str(int(source_value)) if float(source_value).is_integer() else f"{source_value:g}"
+        if calibration["coordinate"] == along:
+            data = calibration["slope"] * source_value + calibration["intercept"]
+            text += f" ({data:.4g}{calibration.get('unit') or ''})"
+        return text
+
+    longest = 48
+    for tile in tiles:
+        step = tile["step"]
+        y_cursor = math.ceil(tile["bounds"][1] / step) * step
+        while y_cursor <= tile["bounds"][3]:
+            longest = max(longest, _text_size(scratch, tick_label(tile["calibration"], y_cursor, "y"), probe_font)[0])
+            y_cursor += step
+    margin_l = max(112, int(longest) + 20)
     canvas_w = max(480, max(margin_l + tile["image"].width + margin_r for tile in tiles))
     legend_font = font(13)
     legend_items = []
