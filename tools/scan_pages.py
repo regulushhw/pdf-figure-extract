@@ -80,6 +80,8 @@ def scan_page(page):
                          'drawing_objects_present_review_each_panel' if drawings else
                          'no_graphic_objects_detected')
     rep['warnings']=[]
+    if rep['images'] and drawings:
+        rep['warnings'].append('Page contains both images and drawing objects; inspect each target panel for usable vector data.')
     if drawings and not rep['long_paths']:
         rep['warnings'].append('No long-path candidates does not mean no vector objects.')
     if rep['numeric_control_characters']:
