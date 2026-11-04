@@ -41,7 +41,8 @@ class Regression(unittest.TestCase):
         self.assertEqual(rep['images'][0]['px'],[20,20])
         self.assertEqual(rep['images'][0]['display_dpi_estimate'],[[18,18]])
         self.assertEqual(rep['routing_hint'],'bitmap_present_review_each_panel')
-        self.assertTrue(rep['warnings'])
+        self.assertIn('Page contains both images and drawing objects; inspect each target panel for usable vector data.',rep['warnings'])
+        self.assertIn('No long-path candidates does not mean no vector objects.',rep['warnings'])
         self.assertAlmostEqual(union_area([(0,0,10,10),(5,0,15,10),(0,0,10,10)]),150)
         doc.close()
 
