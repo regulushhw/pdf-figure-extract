@@ -338,7 +338,8 @@ class Runner:
         if old_contracts and old_contracts != contracts:
             raise ValueError('verification contracts changed after draft preparation')
         self.state['workbook_contracts'] = contracts
-        env = {'SRDP_TASK_DIR': str(folder)}
+        env = {'SRDP_TASK_DIR': str(folder),
+               'FIGURE_PYTHON': os.environ.get('FIGURE_PYTHON') or sys.executable}
         node = os.environ.get('FIGURE_NODE') or shutil.which('node')
         powershell = shutil.which('pwsh') or shutil.which('powershell')
         if not node or not powershell:
