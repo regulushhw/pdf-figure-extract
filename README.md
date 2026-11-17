@@ -8,19 +8,20 @@
 - 显示原图和带编号的叠图，移动、补充或删除点；按既定坐标轴换算，保留来源。
 - 导出过程数据；可选地将核对后的数据写入现有 Excel，保留备份和原始对象。
 - 接收 WebPlotDigitizer、UnPlotter、ChartDetective 的 CSV 导出。需要用户在这些工具中自行导出；本工具不会自动操作它们。
+- 对适合的位图曲线，可选调用本地匹配版本的 WebPlotDigitizer 公开核心；需 Node 和单独取得的源码，不操作其界面。使用范围及方法见 [WPD 核心接入](references/wpd_core.md)。
 
 工具不会仅凭 PDF 自动理解图例、单位和系列身份。低分辨率、遮挡、交叉线以及不支持的图形可能需要人工处理；无法辨认时保留缺值。图读数据是约数，不能当成作者提供的原始数据。
 
 ## 开始使用
 
-需要 Python 和 [requirements.txt](requirements.txt) 中的依赖：
+在本工具目录运行以下命令；需要 Python 和 [requirements.txt](requirements.txt) 中的依赖：
 
 ```sh
 python -m pip install -r requirements.txt
 python tools/prepare_task.py paper.pdf
 ```
 
-第一条命令安装依赖；第二条准备页面图像、候选图表清单和配置，**不会直接生成完整数据表**。普通目录默认写入当前目录的 `figure_tasks/`；项目环境使用命令返回的路径，也可用 `--out` 指定输出目录。
+先检查是否已有满足依赖的 Python 环境，再按需安装；第二条命令准备页面图像、候选图表清单和配置，**不会直接生成完整数据表**。普通目录默认写入当前目录的 `figure_tasks/`；项目环境使用命令返回的路径，也可用 `--out` 指定输出目录。扫描件可使用 `python tools/page_overview.py 任务目录 新输出目录` 浏览已生成的页面缩略图，再回原页精读。
 
 1. 先查看论文及补充材料，确定需要哪些图表；有同条件原表时优先摘录原表。
 2. 在准备结果中查看候选图和图注，确认图例、单位、坐标轴、系列及取样范围；用 `configure` 选择适用的方法并填写配置。
