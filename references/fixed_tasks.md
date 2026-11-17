@@ -8,7 +8,7 @@
 
 ## 拖点修正
 
-错点不要重调提取参数，也不要新写提取代码。程序画出带编号、id 和坐标网格的叠图；看图后每次一条命令。命令结束会重画叠图，并更新该 part 的 `points.xlsx` 与 `points.csv`。这是过程表，不是交付底稿；交付仍走 accept / draft / save。
+少量错点直接修正，不必重调参数或新写提取代码；成片偏差先核对标定、系列和选区等共同配置，有原图依据时修正配置，再处理剩余错点。程序画出带编号、id 和坐标网格的叠图；看图后每次一条命令。命令结束会重画叠图，并更新该 part 的 `points.xlsx` 与 `points.csv`。这是过程表，不是交付底稿；交付仍走 accept / draft / save。
 
 网格数字是源图像素（左上原点，y 向下），不是 PNG 里的位置。括号里是已标定那一轴的数据值。`--data` 只移动这一轴，另一轴保持原像素。
 
@@ -120,7 +120,7 @@ objects用ROI内连续墨迹和当前候选收紧纵向空白，裁剪仅是显�
 
 `trial_job`与`job`沿用原工具输入结构，不再写一份新的提取程序。先在原图上建立系列和取样清单；试读覆盖前、中、后和难辨处。小图可用同一job试读，确认后完整运行会直接复用候选。不同面板/图元使用不同part。需要写表时，在初始任务配置里声明workbook三个文件的路径，文件内容可在提取后填写、首次draft前完成。纯提取任务可省略workbook；之后改变任务定义须用新过程目录，不覆盖旧证据。
 
-固定方法名：`vector_bars`、`vector_lines`、`vector_points`、`vector_dashes`、`bitmap_points`、`bitmap_lines`。支持范围与原脚本相同；对数轴或位图虚线等未覆盖能力不能改名套用。返回unsupported/incomplete时修配置、选择已有适用方法或转维护，不能删除系列让检查通过。
+固定方法名：`vector_bars`、`vector_lines`、`vector_points`、`vector_dashes`、`bitmap_points`、`bitmap_lines` 和 `vector_window_stats`。各方法支持范围以其实际说明为准，不能改名套用；例如 [WPD核心入口](wpd_core.md)支持线性和log10轴，[时间窗统计](vector_windows.md)有自己的轴和覆盖要求。返回unsupported/incomplete时修配置、选择已有适用方法或转维护，不能删除系列让检查通过。
 
 试验方法新增`bitmap_bar_ranges`（柱体/横帽/竖线配对）与`bitmap_curve_identity`（线宽、斜率和有界断口多假设）。都输出原复核契约，详见[复杂图元模块](complex_geometry.md)；不表示已支持任意虚线或自动完成图义判断。
 
@@ -175,6 +175,8 @@ python tools/run_task.py task.json serve
 - [WebPlotDigitizer](https://automeris.io/docs/)：图片图表的计算机视觉与人工辅助数字化。
 
 对应方法名为`unplotter_csv`、`chartdetective_csv`、`webplotdigitizer_csv`；只接收显式导出契约，尚不包含这些应用的自动界面操作。原始导出有多层表头或不同分隔符时，应在工具内选择可用导出格式；不猜测表头、区域数字格式或系列归属。
+
+WPD另有可选的[公开核心运行入口](wpd_core.md)：一次准备生成`review_candidates`任务，复用这里的纠错、撤销和接续；它与上述CSV导入不同，不操作应用界面。线性/log10坐标在读取、改点和叠图中共用转换。
 
 ```json
 {"export":"export.csv","review_image":"axes_and_curves.png",

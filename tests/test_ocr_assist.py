@@ -113,9 +113,38 @@ class OcrTests(unittest.TestCase):
         a,d=self.fixture();a['words'][0]['coordinate_reliable']=False;write(self.root/'analysis.json',a)
         with self.assertRaisesRegex(ValueError,'unreliable'):self.confirm()
 
+    def test_manual_missing_ticks_require_visual_reason_and_calibrate(self):
+        a,d=self.fixture()
+        d['x']=[{'position':40,'value':0,'reason':'source tick'},
+                {'position':110,'value':5,'reason':'source tick'},
+                {'position':180,'value':10,'reason':'source tick'}]
+        write(self.root/'confirmation.json',d)
+        result=self.confirm()
+        self.assertEqual(result['x_ticks'],[[40,0],[110,5],[180,10]])
+        self.assertEqual(result['y_ticks'],[[40,100],[100,50],[160,0]])
+        del d['x'][0]['reason'];write(self.root/'confirmation.json',d)
+        with self.assertRaisesRegex(ValueError,'manual tick requires'):self.confirm()
+        d['x'][0]['reason']='source tick';d['x'][0]['position']=201;write(self.root/'confirmation.json',d)
+        with self.assertRaisesRegex(ValueError,'outside source'):self.confirm()
+
+    def test_independent_tick_checked_without_refitting(self):
+        a,d=self.fixture()
+        d['y_check']=[{'position':70,'value':75,'reason':'source tick'}]
+        write(self.root/'confirmation.json',d)
+        result=self.confirm()
+        self.assertEqual(result['y_check_ticks'],[[70,75]])
+        self.assertEqual(result['independent_tick_status']['y'],'passed')
+        self.assertEqual(result['independent_tick_status']['x'],'not_provided')
+        d['y_check'][0]['position']=73;write(self.root/'confirmation.json',d)
+        with self.assertRaisesRegex(ValueError,'independent tick residual'):self.confirm()
+        d['y_check'][0]['position']=40;d['y_check'][0]['value']=100;write(self.root/'confirmation.json',d)
+        with self.assertRaisesRegex(ValueError,'duplicates'):self.confirm()
+
     def test_generated_config_merge_and_stale_receipt(self):
         from prepare_task import apply_ocr, build
         a,d=self.fixture()
+        d['y_check']=[{'position':70,'value':75,'reason':'source tick'}]
+        write(self.root/'confirmation.json',d)
         # The PDF-only package itself is tested in test_prepare_task; use that fixture here.
         import fitz
         pdf=self.root/'source.pdf'
@@ -130,12 +159,19 @@ class OcrTests(unittest.TestCase):
         part=read(pkg/'decisions.json')['parts'][0]
         self.assertEqual(part['parameters']['image'],str(self.image))
         self.assertEqual(part['scope']['series'],[])
+        self.assertEqual(part['conditions']['ocr_independent_tick_checks']['status'],
+                         {'x':'not_provided','y':'passed'})
         data=read(pkg/'decisions.json');p=data['parts'][0]
         p['scope']={'series':['a'],'sampling':'0,5,10'}
         p['parameters'].update(x_ticks=[[50,0],[170,10]],x_unit='index',sample_at=[0,5,10],
                                series=[{'name':'a','selector':{'mode':'gray','range':[0,80]}}])
         write(pkg/'decisions.json',data)
         self.assertEqual(build(pkg)['selected_parts'],1)
+        data['parts'][0]['conditions']['ocr_independent_tick_checks']['status']['y']='not_provided'
+        write(pkg/'decisions.json',data)
+        with self.assertRaisesRegex(ValueError,'independent tick checks changed'):build(pkg)
+        data['parts'][0]['conditions']['ocr_independent_tick_checks']['status']['y']='passed'
+        write(pkg/'decisions.json',data)
         d['note']='Changed confirmation';write(self.root/'confirmation.json',d)
         with self.assertRaisesRegex(ValueError,'evidence changed'):build(pkg)
 

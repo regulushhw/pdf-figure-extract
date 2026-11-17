@@ -114,7 +114,7 @@ class DragTests(unittest.TestCase):
             self.assertGreater(image.width, (panel['bounds'][2] - panel['bounds'][0] + 1) * panel['scale_x'])
             red = image.getpixel((ix, iy))
             gutter = image.crop((0, 0, panel['origin'][0] - 1, image.height))
-            gutter_pixels = list(gutter.get_flattened_data())
+            gutter_pixels = list(gutter.get_flattened_data() if hasattr(gutter, "get_flattened_data") else gutter.getdata())
             self.assertTrue(any(pixel != (255, 255, 255) for pixel in gutter_pixels))
         self.assertGreater(red[0], 180)
         self.assertLess(red[1], 80)

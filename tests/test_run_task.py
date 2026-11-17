@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import fitz
 from PIL import Image, ImageDraw
@@ -178,6 +179,22 @@ class RunnerTests(unittest.TestCase):
         data=read(Path(r['folder'])/'data.json')
         self.assertEqual(len(data['p']['records']),2)
         self.assertTrue(all(r['value']>0 for r in data['p']['records']))
+
+    def test_workbook_uses_current_python_when_override_missing(self):
+        plan={'paper':1,'target':str(self.root/'book.xlsx'),'backup':str(self.root/'backup.xlsx')}
+        write(self.root/'plan.json',plan)
+        write(self.root/'checks.json',{})
+        write(self.root/'audit.json',{})
+        self.runner.task['workbook']={'plan':'plan.json','checks':'checks.json','audit':'audit.json'}
+        with patch.dict(os.environ, {'FIGURE_PYTHON':''}), \
+             patch.object(self.runner,'approved'), \
+             patch.object(self.runner,'command') as command, \
+             patch('run_task.shutil.which',return_value='runtime'):
+            self.runner.workbook('draft')
+        self.assertGreater(command.call_count,0)
+        for call in command.call_args_list:
+            env=call.args[-1] if isinstance(call.args[-1],dict) else call.kwargs['env']
+            self.assertEqual(env['FIGURE_PYTHON'],sys.executable)
 
     @unittest.skipUnless(os.environ.get('FIGURE_SAVE_INTEGRATION')=='1','configured spreadsheet runtime required')
     def test_runner_full_workbook_pipeline_and_failed_preview_gate(self):

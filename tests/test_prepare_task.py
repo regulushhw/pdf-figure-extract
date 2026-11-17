@@ -1,6 +1,7 @@
 """Synthetic preparation and runner integration; no research workbook writes."""
 import copy
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -76,6 +77,14 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(r2['metrics']['executions'], 1)
         self.assertEqual(r2['metrics']['cache_hits'], 1)
         self.assertEqual(r2['status'], 'unreviewed_candidates')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows CreateProcess working-directory limit')
+    def test_long_windows_working_directory_runs_extractor(self):
+        self.out = self.root / ('long_directory_' * 4) / 'package'
+        self.prepare(); self.vector()
+        result = trial(self.out)
+        self.assertTrue(result['ok'], result)
+        self.assertGreaterEqual(len(str(Path(result['parts'][0]['folder']))), 240)
 
     def test_changed_decisions_new_build_preserves_evidence(self):
         self.prepare(); d = self.vector(); first = build(self.out)

@@ -1,0 +1,42 @@
+{
+  "engine": "WebPlotDigitizer public core",
+  "scope": "Unmodified public JS core. Not AI Assist or GUI.",
+  "files": [
+    {
+      "file": "mathFunctions.js",
+      "sha256": "6a8798c55730c21f4513bd44333f0b06e86b99d1e3059ace2b32f196f92ced05"
+    },
+    {
+      "file": "color.js",
+      "sha256": "2858d3b6390f5320926e6958538a099168f6567e2ad45f267e41e7ec20e15fbf"
+    },
+    {
+      "file": "dateConversion.js",
+      "sha256": "7eda064d809f146c92e4f45671060774268455176170b82a82d87d4d6d7ac451"
+    },
+    {
+      "file": "inputParser.js",
+      "sha256": "35cd75d506dae5f4f6d1edb043af15f940ccde752f4020e0aac13b9b456f3756"
+    },
+    {
+      "file": "calibration.js",
+      "sha256": "6f13a08c071ead1ffbe9e0908c73638127eee60da7fae89d92f2373d8791caec"
+    },
+    {
+      "file": "axes_xy.js",
+      "sha256": "7bda6c34d40c3e6c5748e82f105fda1caaba67462ea2c548604f4185912fbf33"
+    },
+    {
+      "file": "dataset.js",
+      "sha256": "7aba54512dca57d01e318ff1e67119f77720e905b843cddaca494ad9ab261844"
+    },
+    {
+      "file": "autoDetection.js",
+      "sha256": "7f7aa80f8ec599b6dedf18cf37121bcff0986fac5254899a1c5713c9df30d019"
+    },
+    {
+      "file": "curve_detection_customIndependents.js",
+      "sha256": "6d5ef1971e7d8dbad228fc4f298667b3190e491aca645ae11e9d93fd564f9fce"
+    }
+  ]
+}

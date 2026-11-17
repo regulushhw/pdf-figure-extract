@@ -236,22 +236,37 @@ def confirmed(analysis, confirmation):
               'evidence': {'analysis': str(Path(analysis).resolve()), 'confirmation': str(Path(confirmation).resolve()),
                            'analysis_sha256': sha(analysis),
                            'confirmation_sha256': sha(confirmation), 'note': d['note'], 'status': 'Agent visual self-check, not independent validation'}}
+    result['independent_tick_status'] = {}
     for axis in ('x','y'):
         used = set()
-        for tick in d.get(axis, []):
-            w = words[tick['word_id']]
-            if not w['coordinate_reliable'] or w['id'] in used: raise ValueError('unreliable or duplicate tick box')
-            used.add(w['id'])
-            value = tick.get('value', w['numeric_candidate'])
+        checks = []
+        for tick, is_check in [(t, False) for t in d.get(axis, [])] + [(t, True) for t in d.get(axis + '_check', [])]:
+            if tick.get('word_id') is None:
+                if not tick.get('reason', '').strip() or 'position' not in tick or 'value' not in tick:
+                    raise ValueError('manual tick requires value, position and visual reason')
+                value, position = tick['value'], tick['position']
+            else:
+                w = words[tick['word_id']]
+                if not w['coordinate_reliable'] or w['id'] in used: raise ValueError('unreliable or duplicate tick box')
+                used.add(w['id'])
+                value = tick.get('value', w['numeric_candidate'])
+                b = w['bbox']; position = tick.get('position', (b[0]+b[2])/2 if axis=='x' else (b[1]+b[3])/2)
+                if (value != w['numeric_candidate'] or 'position' in tick) and not tick.get('reason','').strip():
+                    raise ValueError('corrected value/tick position requires reason')
             if type(value) not in (float,int) or not math.isfinite(value): raise ValueError('explicit numeric tick value required')
-            b = w['bbox']; position = tick.get('position', (b[0]+b[2])/2 if axis=='x' else (b[1]+b[3])/2)
-            if not math.isfinite(position) or not 0 <= position <= a['size'][0 if axis=='x' else 1]:
+            if type(position) not in (float,int) or not math.isfinite(position) or not 0 <= position <= a['size'][0 if axis=='x' else 1]:
                 raise ValueError('tick position outside source')
-            if (value != w['numeric_candidate'] or 'position' in tick) and not tick.get('reason','').strip():
-                raise ValueError('corrected value/tick position requires reason')
-            result[f'{axis}_ticks'].append([position, value])
-        if result[f'{axis}_ticks']:
-            axis_fit({'coordinate': axis, 'ticks': result[f'{axis}_ticks'], 'unit': 'confirmed', 'max_residual_px': 2})
+            (checks if is_check else result[f'{axis}_ticks']).append([position, value])
+        fit_ticks = result[f'{axis}_ticks']
+        if checks and not fit_ticks:
+            raise ValueError('independent ticks require an axis calibration')
+        if any(c[0] == t[0] or c[1] == t[1] for c in checks for t in fit_ticks):
+            raise ValueError('independent tick duplicates a fit tick')
+        if fit_ticks:
+            axis_fit({'coordinate': axis, 'ticks': fit_ticks, 'check_ticks': checks,
+                      'unit': 'confirmed', 'max_residual_px': 2})
+        result[f'{axis}_check_ticks'] = checks
+        result['independent_tick_status'][axis] = 'passed' if checks else 'not_provided'
     if d.get('unit'):
         unit = d['unit']; lines[unit['line_id']]
         if not lines[unit['line_id']]['coordinate_reliable']: raise ValueError('unit box coordinates require deskew review')

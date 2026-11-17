@@ -44,6 +44,10 @@ python tools/ocr_assist.py recognize 原图.png 过程目录 --engine tesseract 
 
 数字项省value使用识别值，省position使用文本中心；可显式给value或position，修正须写reason。单位与识别行不一致也须写reason。未知数字不将O自动换0，不猜小数点、负号或千位分隔。正文支持的单位与轴题冲突另留说明，不以纠错名义隐藏冲突。
 
+OCR完全漏掉某个刻度时，可在同一 `x` 或 `y` 列表中补充 `{"position":620,"value":-4,"reason":"查看原图确认刻度线位置和标签"}`。位置是原图中该轴的源像素坐标，不是放大预览的像素；必须实际看过当前原图、明确填写数值和位置并说明依据。识别刻度与手工补录可混用，应用时仍整体检查标定残差；不要把手工补录说成自动识别。
+
+将未参与拟合的刻度放进 `x_check`、`y_check`，项格式与 `x`、`y` 相同。程序不把这些点用于拟合，偏差超过2个原图像素时拒绝确认；检查点不能与拟合点复用同一位置或数值。未提供检查点时输出 `not_provided`，不代表已通过独立刻度检查。通过后仍须核对轴类型、系列身份及图元，不能用线性残差证明数据提取正确。
+
 ```text
 python tools/prepare_task.py ocr-apply 过程目录 --part 候选ID --decision 确认.json
 ```

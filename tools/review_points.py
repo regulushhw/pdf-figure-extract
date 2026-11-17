@@ -4,8 +4,8 @@ CLI: prepare job.json out_dir [--limit 6 --offset 0 --resume result.json]
      apply manifest.json decisions.json result.json [--resume result.json]
 
 Original implementation; no third-party digitizer code. Image coordinates use
-the original image's top-left origin. Only explicit linear tick calibration is
-supported. Proposed coordinates are never promoted to visually reviewed ones
+the original image's top-left origin. Explicit linear and log10 tick calibration
+is supported. Proposed coordinates are never promoted to visually reviewed ones
 without an individual decision. drag_points.py is the one-command correction
 loop (numbered overlay, move/add/delete/undo). See ../SKILL.md.
 """
@@ -50,34 +50,65 @@ def inside(point, bounds):
     return bounds[0] <= point[0] <= bounds[2] and bounds[1] <= point[1] <= bounds[3]
 
 
+def axis_forward(value, kind):
+    value = float(value)
+    if not math.isfinite(value):
+        raise ValueError("axis value must be finite")
+    if kind == "linear":
+        return value
+    if kind == "log10":
+        if value <= 0:
+            raise ValueError("log10 axis requires positive values")
+        return math.log10(value)
+    raise ValueError("unsupported axis kind; no linear fallback")
+
+
+def axis_inverse(value, kind):
+    result = 10.0 ** value if kind == "log10" else value
+    if not math.isfinite(result) or kind == "log10" and result <= 0:
+        raise ValueError("axis result is outside finite representable range")
+    return result
+
+
 def axis_fit(axis):
-    if axis.get("kind", "linear") != "linear" or axis.get("coordinate") not in ("x", "y"):
-        raise ValueError("only explicitly identified linear x/y axes are supported")
+    kind = axis.get("kind", "linear")
+    if kind not in ("linear", "log10") or axis.get("coordinate") not in ("x", "y"):
+        raise ValueError("explicit linear/log10 x/y axes required")
     ticks = np.array([pair(t) for t in axis["ticks"]], dtype=float)
     if len(ticks) < 2 or len(set(ticks[:, 0])) != len(ticks):
         raise ValueError("provide at least two distinct tick positions")
-    slope, intercept = np.polyfit(ticks[:, 0], ticks[:, 1], 1)
+    transformed = np.array([axis_forward(v, kind) for v in ticks[:, 1]])
+    slope, intercept = np.polyfit(ticks[:, 0], transformed, 1)
     if abs(slope) < 1e-12:
         raise ValueError("constant calibration")
-    residual = float(np.max(np.abs((ticks[:, 1] - intercept) / slope - ticks[:, 0])))
+    residual = float(np.max(np.abs((transformed-intercept)/slope-ticks[:, 0])))
     tolerance = float(axis.get("max_residual_px", 1.0))
     if not math.isfinite(tolerance) or tolerance < 0 or residual > tolerance:
         raise ValueError(f"tick calibration residual {residual:.4g}px exceeds {tolerance}px")
+    for check in axis.get("check_ticks", []):
+        pos, value = pair(check)
+        error = abs((axis_forward(value, kind)-intercept)/slope-float(pos))
+        if error > tolerance:
+            raise ValueError(f"independent tick residual {error:.4g}px exceeds {tolerance}px")
     return {"slope": float(slope), "intercept": float(intercept),
             "max_residual_px": residual, "coordinate": axis["coordinate"],
-            "ticks": ticks.tolist(), "unit": axis["unit"], "kind": "linear"}
+            "ticks": ticks.tolist(), "unit": axis["unit"], "kind": kind}
+
+
+def value_at_position(pos, calibration):
+    return axis_inverse(calibration["slope"]*pos+calibration["intercept"], calibration.get("kind", "linear"))
 
 
 def value_at(pixel, calibration):
-    pos = pixel[0 if calibration["coordinate"] == "x" else 1]
-    return calibration["slope"] * pos + calibration["intercept"]
+    return value_at_position(pixel[0 if calibration["coordinate"] == "x" else 1], calibration)
 
 
 def data_to_pixel(pixel, calibration, value):
-    """Inverse of value_at. Only the calibrated axis moves; the other pixel stays."""
+    """Move only the calibrated axis, using the same transform as read/overlay."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValueError("data value must be a finite number")
-    pos = (float(value) - calibration["intercept"]) / calibration["slope"]
+    transformed = axis_forward(value, calibration.get("kind", "linear"))
+    pos = (transformed-calibration["intercept"])/calibration["slope"]
     if not math.isfinite(pos):
         raise ValueError("data value does not land on a finite source pixel")
     point = pair(pixel)
@@ -414,7 +445,7 @@ def render_numbered_overlay(result, path, boxes, rows, zoom=None):
     def tick_label(calibration, source_value, along):
         text = str(int(source_value)) if float(source_value).is_integer() else f"{source_value:g}"
         if calibration["coordinate"] == along:
-            data = calibration["slope"] * source_value + calibration["intercept"]
+            data = value_at_position(source_value, calibration)
             text += f" ({data:.4g}{calibration.get('unit') or ''})"
         return text
 
@@ -475,7 +506,7 @@ def render_numbered_overlay(result, path, boxes, rows, zoom=None):
         def axis_text(source_value, along):
             text = str(int(source_value)) if float(source_value).is_integer() else f"{source_value:g}"
             if calibration["coordinate"] == along:
-                data = calibration["slope"] * source_value + calibration["intercept"]
+                data = value_at_position(source_value, calibration)
                 text += f" ({data:.4g}{calibration.get('unit') or ''})"
             return text
 

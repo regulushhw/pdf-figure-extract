@@ -24,6 +24,7 @@ import time
 TOOLS = Path(__file__).resolve().parent
 REPO = TOOLS.parent
 EXTRACTORS = {'vector_bars': 'extract_bars.py', 'vector_lines': 'extract_lines.py',
+              'vector_window_stats': 'vector_windows.py',
               'vector_points': 'extract_points.py', 'vector_dashes': 'extract_dashes.py',
               'bitmap_points': 'propose_bitmap_points.py', 'bitmap_lines': 'auto_trace_bitmap.py',
               'bitmap_bar_ranges': 'complex_bars.py', 'bitmap_curve_identity': 'complex_curves.py'}
@@ -143,8 +144,11 @@ class Runner:
         runtime_env.update(env or {})
         stamp = time.time_ns()
         start = time.perf_counter()
+        # Windows CreateProcess rejects very long working directories even when
+        # Python can create them. Extractor jobs and outputs use absolute paths.
+        run_cwd = TOOLS if os.name == 'nt' and len(str(folder)) >= 240 and script in EXTRACTORS.values() else folder
         with (folder / f'{stamp}.log').open('w', encoding='utf-8') as log:
-            result = subprocess.run(command, cwd=folder, env=runtime_env, stdout=log,
+            result = subprocess.run(command, cwd=run_cwd, env=runtime_env, stdout=log,
                                     stderr=subprocess.STDOUT, shell=False, timeout=300)
         self.state['computer_seconds'] += time.perf_counter() - start
         self.state['executions'] += 1
@@ -334,7 +338,8 @@ class Runner:
         if old_contracts and old_contracts != contracts:
             raise ValueError('verification contracts changed after draft preparation')
         self.state['workbook_contracts'] = contracts
-        env = {'SRDP_TASK_DIR': str(folder)}
+        env = {'SRDP_TASK_DIR': str(folder),
+               'FIGURE_PYTHON': os.environ.get('FIGURE_PYTHON') or sys.executable}
         node = os.environ.get('FIGURE_NODE') or shutil.which('node')
         powershell = shutil.which('pwsh') or shutil.which('powershell')
         if not node or not powershell:

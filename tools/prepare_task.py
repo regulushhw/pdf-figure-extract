@@ -323,6 +323,12 @@ def build(root):
             if sha(evidence['analysis']) != evidence['analysis_sha256'] or sha(evidence['confirmation']) != evidence['confirmation_sha256']:
                 raise ValueError('OCR confirmation evidence changed; reconfirm current source')
             c = confirmed(evidence['analysis'], evidence['confirmation'])
+            recorded_checks = part.get('conditions', {}).get('ocr_independent_tick_checks')
+            if recorded_checks is not None and recorded_checks != {
+                'status': c['independent_tick_status'],
+                'x': c['x_check_ticks'], 'y': c['y_check_ticks']
+            }:
+                raise ValueError('OCR independent tick checks changed; reconfirm current source')
             for key in ('x_ticks','y_ticks','unit'):
                 if c[key] and c[key] != part['parameters'].get(key):
                     raise ValueError('OCR-applied calibration changed; reconfirm the correction')
@@ -435,12 +441,15 @@ def apply_ocr(root, part_id, decision):
     # OCR names do not establish pen style/selector or the requested series scope.
     part['conditions']['ocr_confirmed_series_labels'] = c['series_labels']
     part['conditions']['ocr_calibration_evidence'] = c['evidence']
+    part['conditions']['ocr_independent_tick_checks'] = {
+        'status': c['independent_tick_status'], 'x': c['x_check_ticks'], 'y': c['y_check_ticks']}
     before = sha(root / 'decisions.json')
     backup = root / 'decision_history' / f'{before}.json'; backup.parent.mkdir(exist_ok=True)
     if not backup.exists(): backup.write_bytes((root / 'decisions.json').read_bytes())
     write(root / 'decisions.json', decisions)
     return {'ok': True, 'part': part_id, 'decisions': str(root / 'decisions.json'),
             'x_ticks': len(c['x_ticks']), 'y_ticks': len(c['y_ticks']), 'unit': c['unit'],
+            'independent_tick_status': c['independent_tick_status'],
             'next': 'Confirm pen/series mapping, sampling and remaining fields before trial.'}
 
 
