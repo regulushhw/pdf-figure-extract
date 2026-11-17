@@ -113,6 +113,20 @@ class OcrTests(unittest.TestCase):
         a,d=self.fixture();a['words'][0]['coordinate_reliable']=False;write(self.root/'analysis.json',a)
         with self.assertRaisesRegex(ValueError,'unreliable'):self.confirm()
 
+    def test_manual_missing_ticks_require_visual_reason_and_calibrate(self):
+        a,d=self.fixture()
+        d['x']=[{'position':40,'value':0,'reason':'source tick'},
+                {'position':110,'value':5,'reason':'source tick'},
+                {'position':180,'value':10,'reason':'source tick'}]
+        write(self.root/'confirmation.json',d)
+        result=self.confirm()
+        self.assertEqual(result['x_ticks'],[[40,0],[110,5],[180,10]])
+        self.assertEqual(result['y_ticks'],[[40,100],[100,50],[160,0]])
+        del d['x'][0]['reason'];write(self.root/'confirmation.json',d)
+        with self.assertRaisesRegex(ValueError,'manual tick requires'):self.confirm()
+        d['x'][0]['reason']='source tick';d['x'][0]['position']=201;write(self.root/'confirmation.json',d)
+        with self.assertRaisesRegex(ValueError,'outside source'):self.confirm()
+
     def test_generated_config_merge_and_stale_receipt(self):
         from prepare_task import apply_ocr, build
         a,d=self.fixture()
