@@ -127,6 +127,19 @@ class OcrTests(unittest.TestCase):
         d['x'][0]['reason']='source tick';d['x'][0]['position']=201;write(self.root/'confirmation.json',d)
         with self.assertRaisesRegex(ValueError,'outside source'):self.confirm()
 
+    def test_independent_tick_checked_without_refitting(self):
+        a,d=self.fixture()
+        d['y_check']=[{'position':70,'value':75,'reason':'source tick'}]
+        write(self.root/'confirmation.json',d)
+        result=self.confirm()
+        self.assertEqual(result['y_check_ticks'],[[70,75]])
+        self.assertEqual(result['independent_tick_status']['y'],'passed')
+        self.assertEqual(result['independent_tick_status']['x'],'not_provided')
+        d['y_check'][0]['position']=73;write(self.root/'confirmation.json',d)
+        with self.assertRaisesRegex(ValueError,'independent tick residual'):self.confirm()
+        d['y_check'][0]['position']=40;d['y_check'][0]['value']=100;write(self.root/'confirmation.json',d)
+        with self.assertRaisesRegex(ValueError,'duplicates'):self.confirm()
+
     def test_generated_config_merge_and_stale_receipt(self):
         from prepare_task import apply_ocr, build
         a,d=self.fixture()
