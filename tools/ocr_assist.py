@@ -239,16 +239,21 @@ def confirmed(analysis, confirmation):
     for axis in ('x','y'):
         used = set()
         for tick in d.get(axis, []):
-            w = words[tick['word_id']]
-            if not w['coordinate_reliable'] or w['id'] in used: raise ValueError('unreliable or duplicate tick box')
-            used.add(w['id'])
-            value = tick.get('value', w['numeric_candidate'])
+            if tick.get('word_id') is None:
+                if not tick.get('reason', '').strip() or 'position' not in tick or 'value' not in tick:
+                    raise ValueError('manual tick requires value, position and visual reason')
+                value, position = tick['value'], tick['position']
+            else:
+                w = words[tick['word_id']]
+                if not w['coordinate_reliable'] or w['id'] in used: raise ValueError('unreliable or duplicate tick box')
+                used.add(w['id'])
+                value = tick.get('value', w['numeric_candidate'])
+                b = w['bbox']; position = tick.get('position', (b[0]+b[2])/2 if axis=='x' else (b[1]+b[3])/2)
+                if (value != w['numeric_candidate'] or 'position' in tick) and not tick.get('reason','').strip():
+                    raise ValueError('corrected value/tick position requires reason')
             if type(value) not in (float,int) or not math.isfinite(value): raise ValueError('explicit numeric tick value required')
-            b = w['bbox']; position = tick.get('position', (b[0]+b[2])/2 if axis=='x' else (b[1]+b[3])/2)
-            if not math.isfinite(position) or not 0 <= position <= a['size'][0 if axis=='x' else 1]:
+            if type(position) not in (float,int) or not math.isfinite(position) or not 0 <= position <= a['size'][0 if axis=='x' else 1]:
                 raise ValueError('tick position outside source')
-            if (value != w['numeric_candidate'] or 'position' in tick) and not tick.get('reason','').strip():
-                raise ValueError('corrected value/tick position requires reason')
             result[f'{axis}_ticks'].append([position, value])
         if result[f'{axis}_ticks']:
             axis_fit({'coordinate': axis, 'ticks': result[f'{axis}_ticks'], 'unit': 'confirmed', 'max_residual_px': 2})
