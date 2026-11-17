@@ -143,6 +143,8 @@ class OcrTests(unittest.TestCase):
     def test_generated_config_merge_and_stale_receipt(self):
         from prepare_task import apply_ocr, build
         a,d=self.fixture()
+        d['y_check']=[{'position':70,'value':75,'reason':'source tick'}]
+        write(self.root/'confirmation.json',d)
         # The PDF-only package itself is tested in test_prepare_task; use that fixture here.
         import fitz
         pdf=self.root/'source.pdf'
@@ -157,12 +159,19 @@ class OcrTests(unittest.TestCase):
         part=read(pkg/'decisions.json')['parts'][0]
         self.assertEqual(part['parameters']['image'],str(self.image))
         self.assertEqual(part['scope']['series'],[])
+        self.assertEqual(part['conditions']['ocr_independent_tick_checks']['status'],
+                         {'x':'not_provided','y':'passed'})
         data=read(pkg/'decisions.json');p=data['parts'][0]
         p['scope']={'series':['a'],'sampling':'0,5,10'}
         p['parameters'].update(x_ticks=[[50,0],[170,10]],x_unit='index',sample_at=[0,5,10],
                                series=[{'name':'a','selector':{'mode':'gray','range':[0,80]}}])
         write(pkg/'decisions.json',data)
         self.assertEqual(build(pkg)['selected_parts'],1)
+        data['parts'][0]['conditions']['ocr_independent_tick_checks']['status']['y']='not_provided'
+        write(pkg/'decisions.json',data)
+        with self.assertRaisesRegex(ValueError,'independent tick checks changed'):build(pkg)
+        data['parts'][0]['conditions']['ocr_independent_tick_checks']['status']['y']='passed'
+        write(pkg/'decisions.json',data)
         d['note']='Changed confirmation';write(self.root/'confirmation.json',d)
         with self.assertRaisesRegex(ValueError,'evidence changed'):build(pkg)
 
