@@ -19,6 +19,20 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
+      - name: Check out pinned WPD source
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/checkout@v4
+        with:
+          repository: automeris-io/WebPlotDigitizer
+          ref: 3a3ecb11606945d0701c8a488777e6861be70056
+          path: wpd-upstream
+          persist-credentials: false
+      - name: Verify WPD source and enable integration test
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          python tools/wpd_source_setup.py wpd-upstream "$RUNNER_TEMP/wpd-core"
+          echo "WPD_CORE_SOURCES=$RUNNER_TEMP/wpd-core" >> "$GITHUB_ENV"
       - name: Run tests
         run: python -X utf8 -B -m unittest discover -s tests -q
 
