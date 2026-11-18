@@ -29,9 +29,9 @@ EXTRACTORS = {'vector_bars': 'extract_bars.py', 'vector_lines': 'extract_lines.p
               'bitmap_points': 'propose_bitmap_points.py', 'bitmap_lines': 'auto_trace_bitmap.py',
               'bitmap_bar_ranges': 'complex_bars.py', 'bitmap_curve_identity': 'complex_curves.py'}
 EXTERNAL = {'unplotter_csv', 'chartdetective_csv', 'webplotdigitizer_csv'}
-METHODS = set(EXTRACTORS) | EXTERNAL | {'review_candidates'}
+METHODS = set(EXTRACTORS) | EXTERNAL | {'review_candidates', 'manual_points'}
 ACTIONS = {'status', 'scan', 'trial', 'approve', 'run', 'inspect', 'edit', 'undo',
-           'review', 'apply', 'accept', 'draft', 'save', 'verify', 'drag'}
+           'review', 'apply', 'accept', 'reject', 'draft', 'save', 'verify', 'drag'}
 
 
 def read(path):
@@ -40,6 +40,22 @@ def read(path):
 
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def changed_previews(draft_images, paper):
+    from PIL import Image, ImageChops
+
+    changed = []
+    draft_prefix = f'A{paper}_preview_draft'
+    saved_prefix = f'A{paper}_preview_saved'
+    for path in sorted(map(Path, draft_images)):
+        saved = path.with_name(saved_prefix + path.name.removeprefix(draft_prefix))
+        with Image.open(path) as before, Image.open(saved) as after:
+            if (before.size != after.size or
+                    any(high for _, high in ImageChops.difference(
+                        before.convert('RGBA'), after.convert('RGBA')).getextrema())):
+                changed.append(str(saved))
+    return changed
 
 
 def digest(value):
@@ -92,9 +108,10 @@ class Runner:
     def __init__(self, manifest):
         self.manifest = Path(manifest).resolve()
         self.task = read(self.manifest)
-        allowed = {'version', 'work_dir', 'pdf', 'parts', 'workbook'}
-        if set(self.task) - allowed or self.task.get('version') != 1:
-            raise ValueError('version=1 and fixed manifest fields required; executable fields forbidden')
+        allowed = {'version', 'work_dir', 'pdf', 'parts', 'workbook', 'gate'}
+        version = self.task.get('version')
+        if set(self.task) - allowed or version not in (1, 2) or ('gate' in self.task) != (version == 2):
+            raise ValueError('fixed manifest fields required; version 2 requires gate')
         self.base = self.manifest.parent
         self.work = self.path(self.task['work_dir'])
         if inside(self.work, REPO) or inside(REPO, self.work):
@@ -104,13 +121,26 @@ class Runner:
             raise ValueError('source PDF missing')
         self.parts = self.task['parts']
         ids = [p['id'] for p in self.parts]
-        if not ids or len(ids) != len(set(ids)) or any(not re.fullmatch(r'[A-Za-z0-9_-]{1,48}', x) for x in ids):
-            raise ValueError('nonempty unique safe part IDs required')
+        if len(ids) != len(set(ids)) or any(not re.fullmatch(r'[A-Za-z0-9_-]{1,48}', x) for x in ids):
+            raise ValueError('unique safe part IDs required')
         for part in self.parts:
             if set(part) - {'id', 'method', 'job', 'trial_job', 'scope'}:
                 raise ValueError('unknown part fields')
             if not part.get('scope', {}).get('series') or not part['scope'].get('sampling'):
                 raise ValueError('declare all series and actual sampling before extraction')
+        self.scope = None
+        self.printed = {}
+        if version == 2:
+            from extraction_gate import check_cards, validate_scope
+            gate = self.task['gate']
+            self.gate_path = self.path(gate['file'])
+            if sha(self.gate_path) != gate['sha256']:
+                raise ValueError('frozen scope changed; prepare a new task')
+            self.scope = read(self.gate_path)
+            self.printed = validate_scope(self.scope, self.pdf)
+            check_cards(self.scope, self.parts, allow_subset='workbook' not in self.task)
+        if not ids and not (self.printed and self.task.get('workbook')):
+            raise ValueError('requires extraction parts or reviewed printed values for a workbook')
         self.work.mkdir(parents=True, exist_ok=True)
         self.state_path = self.work / 'task_state.json'
         signature = digest(self.task)
@@ -145,8 +175,8 @@ class Runner:
         stamp = time.time_ns()
         start = time.perf_counter()
         # Windows CreateProcess rejects very long working directories even when
-        # Python can create them. Extractor jobs and outputs use absolute paths.
-        run_cwd = TOOLS if os.name == 'nt' and len(str(folder)) >= 240 and script in EXTRACTORS.values() else folder
+        # Python can create them. Jobs and workbook work folders use absolute paths.
+        run_cwd = TOOLS if os.name == 'nt' and len(str(folder)) >= 240 else folder
         with (folder / f'{stamp}.log').open('w', encoding='utf-8') as log:
             result = subprocess.run(command, cwd=run_cwd, env=runtime_env, stdout=log,
                                     stderr=subprocess.STDOUT, shell=False, timeout=300)
@@ -185,6 +215,10 @@ class Runner:
         if method not in METHODS:
             raise ValueError(f'unsupported method {method}: maintenance required; scope remains incomplete')
         job, inputs, key = self.normalized(part, trial)
+        if self.scope is not None:
+            from extraction_gate import check_configured_coverage, check_job
+            check_job(self.scope['cards'][part['id']], job, method)
+            check_configured_coverage(self.scope, part['id'], job, method)
         cached = self.state['cache'].get(key)
         if cached:
             if not self.valid(cached):
@@ -197,11 +231,15 @@ class Runner:
         folder.mkdir(parents=True)
         job['prefix'] = str(folder / 'data')
         write(folder / 'job.json', job)
-        if method=='review_candidates':
+        if method in {'review_candidates', 'manual_points'}:
             # Import the existing candidate contract, never rerun an extractor
             # or inherit somebody else's reviewed/accepted status.
             from review_points import load_job
             from PIL import Image,ImageDraw
+            if method == 'manual_points':
+                for item in job['items']:
+                    item['roles'] = {role: [] for role in item.get('roles', [item.get('role', 'value')])}
+                    item.pop('origin', None)
             candidate_folder=folder/'candidates';candidate_folder.mkdir()
             candidate=candidate_folder/'review_job.json';write(candidate,job)
             _,_,sources,panels=load_job(candidate)
@@ -221,16 +259,63 @@ class Runner:
             if set(job['columns']['series']) != set(part['scope']['series']):
                 raise ValueError('external series columns must cover declared scope exactly')
             self.import_csv(job, folder)
-        elif method.startswith('vector_'):
-            self.command(EXTRACTORS[method], [folder / 'job.json'], folder)
         else:
-            self.command(EXTRACTORS[method], [folder / 'job.json', folder / 'candidates'], folder)
+            args = [folder / 'job.json']
+            if not method.startswith('vector_'):
+                args.append(folder / 'candidates')
+            self.run_extractor(part, key, args, folder)
         files = {str(p): sha(p) for p in folder.rglob('*') if p.is_file()}
         images = [p for p in files if p.endswith('.png') and any(s in Path(p).name for s in ['check', 'overlay','overview'])]
         record = {'fingerprint': key, 'folder': str(folder), 'files': files, 'images': images,
                   'inputs': inputs, 'status': 'unreviewed_candidates'}
         self.state['cache'][key] = record
         return copy.deepcopy(record)
+
+    def run_extractor(self, part, fingerprint, args, folder):
+        script = EXTRACTORS[part['method']]
+        if self.scope is None:
+            self.command(script, args, folder)
+            return
+        from extraction_gate import attempt_limit, attempt_log, record_attempt
+        source = self.scope['cards'][part['id']]['source']
+        failure = None
+        with attempt_log(self.gate_path, self.scope['pdf_sha256']) as db:
+            attempt_limit(db, source)
+            try:
+                self.command(script, args, folder)
+                if part['method'].startswith('vector_'):
+                    rows = read(folder / 'data.json').get('_evidence', {}).get('records', [])
+                    have_candidate = any(row.get('value') is not None for row in rows)
+                else:
+                    items = read(folder / 'candidates' / 'review_job.json')['items']
+                    have_candidate = any(points for item in items for points in item['roles'].values())
+                if not have_candidate:
+                    raise ValueError('automatic extraction produced no numeric candidates')
+            except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+                failure = exc
+            record_attempt(db, source, fingerprint, 'failed' if failure else 'candidate',
+                           str(failure) if failure else '')
+        if failure:
+            raise failure
+
+    def review_attempt(self, part, fingerprint, status, note):
+        if self.scope is None:
+            return
+        if part['method'] == 'review_candidates':
+            job = read(self.output(f'artifacts/{fingerprint}/job.json'))
+            fingerprint = job.get('wpd_import_contract', {}).get('config_sha256')
+            if not fingerprint:
+                return
+        elif part['method'] not in EXTRACTORS:
+            return
+        from extraction_gate import attempt_log, record_attempt
+        source = self.scope['cards'][part['id']]['source']
+        with attempt_log(self.gate_path, self.scope['pdf_sha256']) as db:
+            current = db.execute('SELECT status FROM attempts WHERE source=? AND fingerprint=?',
+                                 (source, fingerprint)).fetchone()
+            if current == ('failed',) and status == 'confirmed':
+                raise ValueError('rejected automatic output cannot be approved')
+            record_attempt(db, source, fingerprint, status, note)
 
     @staticmethod
     def import_csv(job, folder):
@@ -279,7 +364,14 @@ class Runner:
             if result:
                 result = self.checked_result(result)
                 summary = result['summary']
-                if summary['needs_review'] or summary['explicit_missing'] or summary['numeric_roles_unresolved']:
+                unresolved = summary['numeric_roles_unresolved']
+                if self.scope is not None:
+                    unresolved = summary['visual_roles_unreviewed']
+                    if any(not (role.get('review') or {}).get('note', '').strip()
+                           for item in result['items'] for role in item['roles'].values()
+                           if role['status'] == 'explicit_missing'):
+                        raise ValueError('every source gap requires a visual reason')
+                if unresolved:
                     raise ValueError('unresolved review roles remain; cannot accept')
             else:
                 data = Path(record['folder']) / 'data.json'
@@ -289,6 +381,7 @@ class Runner:
                 if not records or any(r.get('value') is None for r in records):
                     raise ValueError('missing values or evidence records; cannot accept complete scope')
         saved = self.output(f'{part["id"]}_{stage}_decision_{digest(d)}.json')
+        self.review_attempt(part, record['fingerprint'], 'confirmed', d['note'])
         if not saved.exists():
             write(saved, d)
         self.state['parts'][part['id']][stage + '_approval'] = {
@@ -312,6 +405,8 @@ class Runner:
         return read(record['file'])
 
     def workbook(self, action):
+        if self.scope is not None and {part['id'] for part in self.parts} != set(self.scope['cards']):
+            raise ValueError('workbook delivery requires every extraction part in the frozen inventory')
         for part in self.parts:
             self.approved(part, 'run')
         cfg = self.task['workbook']
@@ -325,7 +420,19 @@ class Runner:
         paper = plan['paper']
         if type(paper) is not int or not 1 <= paper <= 9999:
             raise ValueError('invalid paper ID')
-        folder = self.output('workbook'); folder.mkdir(exist_ok=True)
+        contracts = {str(self.path(cfg[k])):sha(self.path(cfg[k])) for k in ['checks','audit']}
+        evidence_path = self.output('delivery_evidence.json')
+        if self.scope is not None:
+            revision = digest({'plan': plan, 'contracts': contracts,
+                               'delivery_evidence': sha(evidence_path) if evidence_path.exists() else None,
+                               'accepted': [self.state['parts'][p['id']]['run_approval']['sha256']
+                                            for p in self.parts],
+                               'results': [self.state['parts'][p['id']].get('result', {}).get('sha256')
+                                           for p in self.parts]})
+            folder = self.output(f'workbook/{revision[:24]}')
+        else:
+            folder = self.output('workbook')
+        folder.mkdir(parents=True, exist_ok=True)
         plan_path = folder / f'A{paper}_修改计划.json'
         existing = read(plan_path) if plan_path.exists() else None
         without_snapshot = lambda p: {k:v for k,v in p.items() if k != 'source_snapshot'}
@@ -333,9 +440,8 @@ class Runner:
             raise ValueError('save plan changed; keep evidence and use a new task')
         if not plan_path.exists():
             write(plan_path, plan)
-        contracts = {str(self.path(cfg[k])):sha(self.path(cfg[k])) for k in ['checks','audit']}
         old_contracts = self.state.get('workbook_contracts')
-        if old_contracts and old_contracts != contracts:
+        if self.scope is None and old_contracts and old_contracts != contracts:
             raise ValueError('verification contracts changed after draft preparation')
         self.state['workbook_contracts'] = contracts
         env = {'SRDP_TASK_DIR': str(folder),
@@ -345,29 +451,74 @@ class Runner:
         if not node or not powershell:
             raise ValueError('configured Node and PowerShell required for workbook pipeline')
         draft = folder / f'A{paper}_保存前.xlsx'
+        preview_receipt = folder / 'draft_previews.json'
+        results = None
+        if self.scope is not None:
+            results = {}
+            for part in self.parts:
+                part_state = self.state['parts'][part['id']]
+                if 'result' in part_state:
+                    results[part['id']] = self.checked_result(part_state['result'])
+                else:
+                    record = self.current(part, 'run')
+                    results[part['id']] = read(Path(record['folder']) / 'data.json')
+
+        def reconcile(book):
+            if self.scope is not None:
+                from extraction_gate import check_delivery
+                check_delivery(self.scope, book, read(evidence_path) if evidence_path.exists() else {},
+                               results, self.printed)
+
         if action == 'draft':
             if draft.exists():
-                raise ValueError('draft already exists; use save or new task rather than overwrite')
-            self.command('workbook_save/author.mjs', ['author', paper], folder, node, env)
-            self.command('workbook_save/merge_cells.py', [paper], folder, env=env)
-            self.command('workbook_save/author.mjs', ['preview_draft', paper], folder, node, env)
-            return {'status': 'draft_needs_visual_review', 'images': list(map(str, folder.glob('*preview_draft*.png')))}
+                if self.scope is None:
+                    raise ValueError('draft already exists; use save or new task rather than overwrite')
+            else:
+                self.command('workbook_save/author.mjs', ['author', paper], folder, node, env)
+                self.command('workbook_save/merge_cells.py', [paper], folder, env=env)
+            reconcile(draft)
+            if self.scope is not None:
+                self.command('verify.py', [draft, self.path(cfg['checks'])], folder)
+                self.command('audit_workbook.py', [draft, self.path(cfg['audit'])], folder)
+            images = list(map(str, folder.glob('*preview_draft*.png')))
+            if not preview_receipt.is_file():
+                self.command('workbook_save/author.mjs', ['preview_draft', paper], folder, node, env)
+                images = list(map(str, folder.glob('*preview_draft*.png')))
+                if self.scope is not None:
+                    if not images or len(images) != len(plan.get('previews', [])):
+                        raise ValueError('draft must render one preview per declared view')
+                    write(preview_receipt, {'draft': sha(draft), 'images': {p: sha(p) for p in images}})
+            elif read(preview_receipt) != {'draft': sha(draft), 'images': {p: sha(p) for p in images}}:
+                raise ValueError('draft or completed preview changed')
+            return {'status': 'draft_needs_visual_review', 'draft': str(draft), 'images': images}
         target = Path(plan['target'])
         checkbook = draft if action == 'save' else target
+        reconcile(checkbook)
         self.command('verify.py', [checkbook, self.path(cfg['checks'])], folder)
         self.command('audit_workbook.py', [checkbook, self.path(cfg['audit'])], folder)
         if action == 'save':
             decision = self.output('save_decision.json')
             d = read(decision)
             images = {str(p): sha(p) for p in folder.glob('*preview_draft*.png')}
+            if self.scope is not None and (not preview_receipt.is_file() or
+                    read(preview_receipt) != {'draft': sha(draft), 'images': images}):
+                raise ValueError('save requires the completed previews for this draft')
             if (d.get('draft_sha256') != sha(draft) or not images or d.get('images') != images
                     or d.get('notes_checked') is not True or d.get('viewed') is not True):
                 raise ValueError('save_decision.json must attest draft, preview images and affected notes')
             self.command('workbook_save/recalculate.ps1', ['-PaperIds', paper, '-BundledEngine'],
                          folder, powershell, env)
+            reconcile(target)
             self.command('verify.py', [target, self.path(cfg['checks'])], folder)
             self.command('audit_workbook.py', [target, self.path(cfg['audit'])], folder)
-            self.command('workbook_save/author.mjs', ['preview', paper], folder, node, env)
+            mode = 'preview_saved' if self.scope is not None else 'preview'
+            self.command('workbook_save/author.mjs', [mode, paper], folder, node, env)
+            if self.scope is not None:
+                changed = changed_previews(images, paper)
+                self.state['saved'] = {'target': str(target), 'sha256': sha(target),
+                                       'changed_previews': changed}
+                return {'status': 'saved_visual_changes_need_review' if changed else 'saved_checks_passed',
+                        'workbook': str(target), 'images': changed}
             self.state['saved'] = {'target': str(target), 'sha256': sha(target),
                                    'scope': 'declared task only; saved preview still requires viewing'}
         return {'status': 'saved_checks_passed' if action == 'save' else 'declared_checks_passed',
@@ -471,6 +622,23 @@ class Runner:
             return {k: record[k] for k in ['fingerprint', 'folder', 'images', 'status']}
         if action in {'approve', 'accept'}:
             return self.attest(part, 'trial' if action == 'approve' else 'run', decision)
+        if action == 'reject':
+            if self.scope is None or part['method'] not in (set(EXTRACTORS) | {'review_candidates'}):
+                raise ValueError('reject requires a gated automatic extraction')
+            d = read(self.path(decision))
+            stage = d.get('stage')
+            if stage not in ('trial', 'run'):
+                raise ValueError('reject decision requires trial or run stage')
+            record = self.current(part, stage)
+            if (d.get('fingerprint') != record['fingerprint'] or
+                    d.get('images') != {p: sha(p) for p in record['images']} or
+                    not isinstance(d.get('note'), str) or not d['note'].strip()):
+                raise ValueError('reject requires current output, image hashes and visual reason')
+            self.review_attempt(part, record['fingerprint'], 'failed', d['note'])
+            state.pop(stage + '_approval', None)
+            if stage == 'trial':
+                state.pop('run_approval', None)
+            return {'status': 'rejected_automatic_output'}
         record = self.current(part, 'run')
         job = Path(record['folder']) / 'candidates/review_job.json'
         if not job.exists():
@@ -510,6 +678,8 @@ class Runner:
 
     def dispatch(self, request):
         try:
+            if self.scope is not None and sha(self.gate_path) != self.task['gate']['sha256']:
+                raise ValueError('frozen scope changed; prepare a new task')
             if digest({str(p.relative_to(TOOLS)):sha(p) for p in code_files()}) != self.state['tools']:
                 raise ValueError('tool code changed during session; maintenance requires a new task')
             allowed={'action','part','decision','batch','points','regions','view_mode'}

@@ -14,11 +14,25 @@
 """
 import argparse
 import json
+import re
 from collections import Counter
 
 import fitz
 
 from calib import collect_spans, numeric_spans, color_key
+
+CAPTION = re.compile(r'^\s*(Figure|Fig\.?|Table|图|表)\s*([0-9]+[a-z]?|[IVXLCDM]+)'
+                     r'(?:\s*[.:：](?:\s|$)|\s*$)', re.I)
+
+
+def caption_matches(blocks):
+    for block in blocks:
+        for line in block[4].splitlines():
+            match = CAPTION.match(line)
+            if match:
+                kind = 'table' if match[1].lower() in ('table', '表') else 'figure'
+                yield {'kind': kind, 'label': match[2], 'text': block[4].strip(),
+                       'bbox_pt': list(block[:4])}
 
 
 def scan_page(page):

@@ -27,9 +27,11 @@ python tools/wpd_source_setup.py 官方源码目录 新输出目录
 ## 一次准备，接续现有任务
 
 ```text
-python tools/wpd_extract.py prepare config.json new_output_dir --pdf paper.pdf
+python tools/wpd_extract.py prepare config.json new_output_dir --pdf paper.pdf --gate scope.json --part figure
 python tools/run_task.py new_output_dir/task.json trial --part figure
 ```
+
+同一篇论文混用多种读数器时，传入全文共用的 `scope.json`，并用该图卡的 ID 指定 `--part`。把返回目录中的 `review_job.json` 填入全文 `decisions.json` 对应部件的 `job_file`，方法设为 `review_candidates`。随后从全文准备包试读和复核一次。单图准备包可用于定位与导出，整篇工作簿交付仍以全文范围对账。
 
 随后按现有流程看原图与叠图、approve、run。用`drag_points.py`或批量inspect/edit纠错，完成后：
 
