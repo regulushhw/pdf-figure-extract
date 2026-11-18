@@ -70,6 +70,18 @@ def rectangles(sheet, table):
                     min_col=left, max_col=right) for cell in row]
 
 
+def is_complete_transpose(sheet, table):
+    left, top, _, _ = data_bounds(table)
+    width = len(table['rows'])
+    height = len(table['columns'])
+    headers = [sheet.cell(top - 1, left + offset).value for offset in range(width)]
+    labels = [sheet.cell(top + offset, left - 1).value for offset in range(height)]
+    return (headers == table['rows'] and labels == table['columns'] and
+            all(value is not None and value != '' for row in sheet.iter_rows(
+                min_row=top, max_row=top + height - 1, min_col=left,
+                max_col=left + width - 1, values_only=True) for value in row))
+
+
 def cell_bindings(table, table_id, field='points'):
     lo, top, hi, bottom = data_bounds(table)
     if field == 'points' and 'grid' in table:
@@ -147,8 +159,13 @@ def inspect_workbook(path, tables, final=False, missing=None, point_values=None)
             if name not in book:
                 errors.append(f'{table_id}: missing sheet {name}')
                 continue
-            columns, rows, cells = rectangles(book[name], table)
+            sheet = book[name]
+            columns, rows, cells = rectangles(sheet, table)
             if columns != table['columns'] or rows != table['rows']:
+                if is_complete_transpose(sheet, table):
+                    errors.append(f'{table_id}: rows and columns are transposed; '
+                                  'use horizontal-axis values as columns and legend series as rows')
+                    continue
                 errors.append(f'{table_id}: rows or columns differ from frozen scope')
             if not final:
                 continue

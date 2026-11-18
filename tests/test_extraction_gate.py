@@ -9,7 +9,8 @@ from openpyxl import Workbook
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from extraction_gate import cell_bindings, check_cards, check_configured_coverage, check_delivery, check_job, validate_scope
+from extraction_gate import cell_bindings, check_cards, check_configured_coverage, check_delivery, check_job, inspect_workbook, validate_scope
+from review_points import axis_fit
 from run_task import Runner, changed_previews, sha, write
 
 
@@ -91,6 +92,37 @@ class ExtractionGateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'unsupported missing value at Fig6-1!C2'):
                 check_delivery(self.scope, draft, {})
 
+    def assert_table_diagnosis(self, rows, expected_message):
+        path = self.root / 'layout.xlsx'
+        book = Workbook()
+        for row in rows:
+            book.active.append(row)
+        book.save(path)
+        book.close()
+        table = {'sheet': 'Sheet', 'range': 'B2:D3',
+                 'columns': [70, 80, 90], 'rows': ['observed', 'simulated']}
+        with self.assertRaisesRegex(ValueError, f'^Fig6: {expected_message}'):
+            inspect_workbook(path, {'Fig6': table}, final=True)
+
+    def test_complete_transpose_has_specific_diagnostic(self):
+        self.assert_table_diagnosis([
+            [None, 'observed', 'simulated'], [70, 1, 4], [80, 2, 5], [90, 3, 6]
+        ], 'rows and columns are transposed')
+
+    def test_transpose_with_missing_column_is_not_a_complete_transpose(self):
+        for rows in (
+            [[None, 'observed'], [70, 1], [80, 2], [90, 3]],
+            [[None, 'observed', 'simulated'], [70, 1, 4], [80, 2, 5]],
+            [[None, 'observed', 'simulated'], [70, 1, 4], [80, 2, None], [90, 3, 6]],
+        ):
+            with self.subTest(rows=rows):
+                self.assert_table_diagnosis(rows, 'rows or columns differ from frozen scope')
+
+    def test_regular_missing_column_keeps_scope_diagnostic(self):
+        self.assert_table_diagnosis([
+            [None, 70, 90], ['observed', 1, 3], ['simulated', 4, 6]
+        ], 'rows or columns differ from frozen scope')
+
     def test_only_changed_saved_previews_require_visual_review(self):
         original = Image.new('RGBA', (6, 6), 'white')
         drafts = []
@@ -168,6 +200,14 @@ class ExtractionGateTests(unittest.TestCase):
         card['axes']['x']['check_ticks'] = [[13, 10]]
         with self.assertRaisesRegex(ValueError, 'independent tick residual'):
             check_job(card, job, 'vector_window_stats')
+
+    def test_axis_fit_rejects_duplicate_values_at_distinct_positions(self):
+        for kind, values in (('linear', [1, 1, 21]), ('log10', [1, 1, 100])):
+            with self.subTest(kind=kind):
+                axis = {'kind': kind, 'coordinate': 'x', 'unit': '%',
+                        'ticks': list(zip([0, 1, 20], values)), 'max_residual_px': 2}
+                with self.assertRaisesRegex(ValueError, 'duplicate fitted tick values'):
+                    axis_fit(axis)
 
     def test_configuration_shortened_axis_and_missing_series_fail_before_read(self):
         self.scope['cards'] = {'p': {'source': 'Fig6', 'series': ['observed', 'simulated']}}

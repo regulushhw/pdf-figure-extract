@@ -35,14 +35,18 @@ python tools/ocr_assist.py recognize 原图.png 过程目录 --engine tesseract 
   "review_image_sha256":"沿用模板",
   "viewed":true,
   "note":"实际核对的面板、轴刻度与限制",
-  "x":[{"word_id":"r0_l6_w0"},{"word_id":"另一个数字ID"}],
-  "y":[{"word_id":"纵轴数字ID"},{"word_id":"另一个数字ID"}],
+  "x":[{"word_id":"横轴数字ID1","position":110,"reason":"原图刻度线中心X"},{"word_id":"横轴数字ID2","position":410,"reason":"原图刻度线中心X"}],
+  "y":[{"word_id":"纵轴数字ID1","position":590,"reason":"原图刻度线中心Y"},{"word_id":"纵轴数字ID2","position":190,"reason":"原图刻度线中心Y"}],
+  "x_check":[{"word_id":"横轴独立检查数字ID","position":260,"reason":"原图刻度线中心X"}],
+  "y_check":[{"word_id":"纵轴独立检查数字ID","position":390,"reason":"原图刻度线中心Y"}],
   "unit":{"line_id":"单位所在行ID","text":"Ml/d","reason":"原图斜杠被OCR误识别，已回图纠正"},
   "series":[{"line_id":"图例行ID","name":"Observed"}]
 }
 ```
 
-数字项省value使用识别值，省position使用文本中心；可显式给value或position，修正须写reason。单位与识别行不一致也须写reason。未知数字不将O自动换0，不猜小数点、负号或千位分隔。正文支持的单位与轴题冲突另留说明，不以纠错名义隐藏冲突。
+**拟合项 `x`、`y` 和独立检查项 `x_check`、`y_check` 都要显式填写原图刻度线位置**。在原图上沿数字标签找到对应的刻度线，横轴取线中心的 X，纵轴取线中心的 Y。OCR 文本框中心只用于寻找标签。旧确认接口省略 `position` 时会回填文本中心，因此填写确认时应逐项给出刻度线坐标和 `reason`。刻度线被裁掉或无法定位时，换完整原图再标定。
+
+数字项省略 `value` 时使用识别值。修正数值或单位须写 `reason`。未知数字和小数点、负号、千位分隔按原图确认。正文支持的单位与轴题冲突另留说明。
 
 OCR完全漏掉某个刻度时，可在同一 `x` 或 `y` 列表中补充 `{"position":620,"value":-4,"reason":"查看原图确认刻度线位置和标签"}`。位置是原图中该轴的源像素坐标，不是放大预览的像素；必须实际看过当前原图、明确填写数值和位置并说明依据。识别刻度与手工补录可混用，应用时仍整体检查标定残差；不要把手工补录说成自动识别。
 
