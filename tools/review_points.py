@@ -77,6 +77,8 @@ def axis_fit(axis):
     ticks = np.array([pair(t) for t in axis["ticks"]], dtype=float)
     if len(ticks) < 2 or len(set(ticks[:, 0])) != len(ticks):
         raise ValueError("provide at least two distinct tick positions")
+    if len(set(ticks[:, 1])) != len(ticks):
+        raise ValueError("duplicate fitted tick values")
     transformed = np.array([axis_forward(v, kind) for v in ticks[:, 1]])
     slope, intercept = np.polyfit(ticks[:, 0], transformed, 1)
     if abs(slope) < 1e-12:
