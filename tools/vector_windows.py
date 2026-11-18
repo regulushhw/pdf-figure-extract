@@ -137,6 +137,11 @@ def run(job_path):
                     'identity':w['identity'],'statistic':metric,'value':stats[metric],'pdf_xy':pdf_point,
                     'covered_fraction':stats['covered_fraction'],'status':stats['status'],
                     'reading_kind':'calculated_from_displayed_vector_curve'})
+                if metric == 'mean' and stats['status'] == 'complete':
+                    records[-1]['pdf_window'] = {
+                        'x': [(end - xfit['intercept']) / xfit['slope'] for end in (w['start'], w['stop'])],
+                        'path_indices': [path['path_index'] for path in source_paths if path['series'] == s['name']],
+                    }
     prefix=Path(job.get('prefix','data')).resolve();prefix.parent.mkdir(parents=True,exist_ok=True)
     out={'records':records,'calibration':{'x':xfit,'y':yfit},'source_paths':source_paths,
          '_evidence':record_envelope(job,records,{'x':xfit,'y':yfit},'vector_window_stats'),

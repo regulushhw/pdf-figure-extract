@@ -21,14 +21,10 @@ import sys
 import time
 
 import fitz
-from scan_pages import scan_page
+from scan_pages import caption_matches, scan_page
 from run_task import (Runner, METHODS, EXTERNAL, REPO, TOOLS, digest, inside,
                       read, readonly_tools, sha, write)
 from review_points import axis_fit
-
-CAPTION = re.compile(r'^\s*(Figure|Fig\.?|Table|图|表)\s*([0-9]+|[IVXLCDM]+)'
-                     r'(?:\s*[.:：](?:\s|$)|\s*$)', re.I)
-
 
 def utc():
     return datetime.now(timezone.utc).isoformat()
@@ -119,16 +115,7 @@ def prepare(pdf, out=None, reuse=()):
             page_texts[number] = text
             text_path = root / 'pages' / f'p{number:03}.txt'
             text_path.write_text(text, encoding='utf-8')
-            captions = []
-            for b in blocks:
-                # A caption may share a text block with the preceding paragraph.
-                for line in b[4].splitlines():
-                    match = CAPTION.match(line)
-                    if match:
-                        kind = 'table' if match[1].lower() in ('table', '表') else 'figure'
-                        captions.append({'kind': kind, 'label': match[2],
-                                         'text': b[4].strip(), 'bbox_pt': list(b[:4])})
-                        break
+            captions = list(caption_matches(blocks))
             sparse = len(re.sub(r'\s', '', text)) < 40
             if sparse:
                 warnings.append({'page': number, 'reason': 'text_sparse_OCR_or_visual_needed'})
@@ -229,7 +216,7 @@ def compact_job(part, pdf, page, base):
         if set(names) != set(part['scope']['series']):
             raise ValueError('series mapping must match declared scope')
         return job
-    if method == 'bitmap_points':
+    if method in ('bitmap_points', 'manual_points'):
         bounds = p['bounds']
         if any(type(v) not in (float,int) or not math.isfinite(v) or int(v) != v for v in bounds):
             raise ValueError('bitmap bounds must use integer source-pixel coordinates')
@@ -254,6 +241,7 @@ def compact_job(part, pdf, page, base):
                     'selector': series['selector'], 'neighbor_px': 0,
                     'limitations': ['Ink-run centers are curve candidates, not bar tips or confirmed series.']})
         return {'schema_version': 1, 'sources': {'s': {'image': absolute(p['image'], base)}},
+                'gate_axes': {'x': {'ticks': p['x_ticks'], 'unit': p['x_unit']}},
                 'panels': {'p': {'source': 's', 'bounds': bounds, 'axis': axis}}, 'items': items}
     raise ValueError('compact template supports vector_lines/bitmap_points; use existing job for other methods')
 
@@ -272,7 +260,7 @@ def configure(root, part_id, method=None):
         if method == 'vector_lines':
             p = {'frame': page['scan']['frames'][0] if len(page['scan']['frames']) == 1 else None,
                  'x_ticks': [], 'y_ticks': [], 'sample_at': [], 'color_map': {}}
-        elif method == 'bitmap_points':
+        elif method in ('bitmap_points', 'manual_points'):
             p = {'image': c['assets'][0]['image'] if len(c['assets']) == 1 else None,
                  'bounds': None, 'x_ticks': [], 'x_unit': '', 'y_ticks': [], 'unit': '',
                  'sample_at': [], 'series': []}
@@ -292,13 +280,17 @@ def configure(root, part_id, method=None):
             'next': 'Confirm scope and fill key parameters; build rejects incomplete fields.'}
 
 
-def build(root):
+def build(root, require_gate=False):
     start = time.perf_counter()
     root, package = check_package(root)
     decisions = read(root / 'decisions.json')
+    if require_gate and not decisions.get('gate'):
+        raise ValueError('set decisions.json gate to the frozen inventory, baseline and figure cards')
     inventory = read(root / 'inventory.json')
     candidates = {c['id']: c for c in inventory['candidates']}
     parts, jobs, inputs, pending = [], {}, {}, []
+    ocr_checks = {}
+    workbook = decisions.get('workbook')
     ids = set()
     for part in decisions['parts']:
         pid = part['id']
@@ -332,8 +324,15 @@ def build(root):
             for key in ('x_ticks','y_ticks','unit'):
                 if c[key] and c[key] != part['parameters'].get(key):
                     raise ValueError('OCR-applied calibration changed; reconfirm the correction')
+            ocr_checks[pid] = {'x': c['x_check_ticks'], 'y': c['y_check_ticks']}
         candidate = candidates.get(part.get('candidate_id'))
-        if 'job' in part:
+        if 'job_file' in part:
+            if not decisions.get('gate') or part['method'] != 'review_candidates' or 'job' in part or 'trial_job' in part:
+                raise ValueError(f'{pid}: job_file requires a gated candidate import with one job')
+            path = Path(absolute(part['job_file'], root))
+            inputs[str(path)] = sha(path)
+            full = normalize_job(read(path), path.parent, Path(package['pdf']))
+        elif 'job' in part:
             full = normalize_job(part['job'], root, Path(package['pdf']))
         elif candidate:
             full = compact_job(part, Path(package['pdf']), candidate['page'], root)
@@ -345,9 +344,26 @@ def build(root):
         jobs[pid] = (full, trial)
         parts.append({'id': pid, 'method': part['method'], 'job': f'{pid}_full.json',
                       'trial_job': f'{pid}_trial.json', 'scope': part['scope']})
-    if not parts:
-        raise ValueError('no extraction part ready; fill key fields in decisions.json')
-    workbook = decisions.get('workbook')
+    gate = None
+    printed = {}
+    if 'gate' in decisions:
+        from extraction_gate import check_cards, check_configured_coverage, check_job, validate_scope
+        gate_path = absolute(decisions['gate'], root)
+        scope = read(gate_path)
+        printed = validate_scope(scope, package['pdf'])
+        check_cards(scope, parts, allow_subset=not workbook)
+        for part in parts:
+            card = scope['cards'][part['id']]
+            for axis, checks in ocr_checks.get(part['id'], {}).items():
+                if any(tick not in card['axes'][axis]['check_ticks'] for tick in checks):
+                    raise ValueError(f"{part['id']}: frozen {axis} checks omit confirmed OCR evidence")
+            for job in jobs[part['id']]:
+                check_job(card, job, part['method'])
+                check_configured_coverage(scope, part['id'], job, part['method'])
+        gate = {'file': gate_path, 'sha256': sha(gate_path)}
+        inputs[gate_path] = gate['sha256']
+    if not parts and not (printed and workbook):
+        raise ValueError('no extraction part or source table workbook ready; fill key fields in decisions.json')
     if workbook:
         if set(workbook) != {'plan', 'checks', 'audit'}:
             raise ValueError('workbook requires plan/checks/audit paths')
@@ -373,6 +389,8 @@ def build(root):
             write(folder / f'{pid}_full.json', full)
             write(folder / f'{pid}_trial.json', trial)
         task = {'version': 1, 'pdf': package['pdf'], 'work_dir': 'run', 'parts': parts}
+        if gate:
+            task.update(version=2, gate=gate)
         if workbook: task['workbook'] = workbook
         write(folder / 'task.json', task)
         write(folder / 'scope.json', {'selected': [p['id'] for p in parts], 'remaining': pending,
@@ -429,7 +447,7 @@ def apply_ocr(root, part_id, decision):
         raise ValueError('OCR source/part mismatch')
     decisions = read(root / 'decisions.json')
     part = next(p for p in decisions['parts'] if p['id'] == part_id)
-    if part['method'] != 'bitmap_points' or 'job' in part:
+    if part['method'] not in ('bitmap_points', 'manual_points') or 'job' in part:
         raise ValueError('automatic OCR merge supports compact bitmap_points; other jobs use confirmed config explicitly')
     p = part['parameters']
     if p.get('image') and absolute(p['image'], root) != c['image']:
@@ -453,9 +471,9 @@ def apply_ocr(root, part_id, decision):
             'next': 'Confirm pen/series mapping, sampling and remaining fields before trial.'}
 
 
-def trial(root):
+def trial(root, require_gate=False):
     start = time.perf_counter()
-    compiled = build(root)
+    compiled = build(root, require_gate=require_gate)
     replies = []
     with readonly_tools():
         runner = Runner(compiled['task'])
@@ -486,6 +504,7 @@ def main():
     ap.add_argument('--engine', default='auto')
     ap.add_argument('--language')
     ap.add_argument('--decision')
+    ap.add_argument('--legacy-ungated', action='store_true', help='replay a historical package without the new gates')
     args = ap.parse_args()
     try:
         if args.input in ('build', 'trial', 'status', 'configure', 'ocr', 'ocr-apply'):
@@ -496,8 +515,11 @@ def main():
                 reply = ocr_labels(args.package, args.part, args.image, args.bounds, args.engine, args.language)
             elif args.input == 'ocr-apply':
                 reply = apply_ocr(args.package, args.part, args.decision)
+            elif args.input in ('build', 'trial'):
+                reply = {'build': build, 'trial': trial}[args.input](
+                    args.package, require_gate=not args.legacy_ungated)
             else:
-                reply = {'build': build, 'trial': trial, 'status': status}[args.input](args.package)
+                reply = status(args.package)
         else:
             reply = prepare(args.input, args.out, args.reuse)
         print(json.dumps(reply, ensure_ascii=False))
