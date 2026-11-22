@@ -164,6 +164,23 @@ class Regression(unittest.TestCase):
         self.assertEqual(thin['display_decimals'], 0)
         self.assertTrue((OUT/'styles_check.png').exists())
 
+    def test_vector_whisker_cap_requires_a_unique_bounded_segment(self):
+        with fitz.open() as doc:
+            page = doc.new_page(width=200, height=200)
+            page.draw_rect(fitz.Rect(10, 10, 190, 190), color=(0, 0, 0))
+            page.draw_line((10, 30), (190, 30), color=(0, 0, 0))
+            page.draw_line((47, 40), (53, 40), color=(0, 0, 0))
+            page.draw_line((50, 40), (50, 55), color=(0, 0, 0))
+            axis = {'f': lambda value: value, 'inv': lambda value: value}
+            args = (page, [35, 20, 65, 58], {'0,0,0': 'whisker'}, axis, axis, [50])
+            spec = {'identity': 'upper whisker', 'width_pt': [5, 7]}
+            result, marks = lines.extract_lines(*args, horizontal_statistic=spec)
+            self.assertEqual(result['whisker'], [(50, 40)])
+            self.assertEqual(marks, [(50, 40)])
+            page.draw_line((47, 45), (53, 45), color=(0, 0, 0))
+            with self.assertRaisesRegex(ValueError, '歧义'):
+                lines.extract_lines(*args, horizontal_statistic=spec)
+
     def test_vector_line_axis_uses_exact_log_ticks_and_independent_check(self):
         axes={'kind':'log10','ticks':[[10,1],[30,100]],'check_ticks':[[20,10]]}
         fit=lines.calibrated_axis(axes,'y')

@@ -93,12 +93,18 @@ def missing_intersection(x, frame, endpoints, calibration_error):
 
 
 def extract_lines(page, frame, color_map, xcal, ycal, sample_at, series_styles=None, insets=(),
-                  measurements=None, missing=None):
+                  measurements=None, missing=None, horizontal_statistic=None):
     from calib import geometry_segments
     if bool(color_map)==bool(series_styles):raise ValueError('color_map与series_styles须且只能填写一种')
     cmap = parse_colormap(color_map) if color_map else {}
     x0,y0,x1,y1 = frame
     frame_box = fitz.Rect(frame)
+    if horizontal_statistic is not None:
+        width = horizontal_statistic['width_pt']
+        if (not isinstance(horizontal_statistic.get('identity'), str) or not horizontal_statistic['identity'].strip()
+                or len(width) != 2 or not all(math.isfinite(n) for n in width)
+                or not 0 < width[0] <= width[1] < frame_box.width):
+            raise ValueError('horizontal statistic requires identity and a bounded segment width in PDF points')
     inset_boxes = [fitz.Rect(box) for box in insets]
     if any(box.is_empty or not frame_box.contains(box) or box == frame_box for box in inset_boxes):
         raise ValueError('inset must be a proper rectangle within the main frame')
@@ -118,7 +124,13 @@ def extract_lines(page, frame, color_map, xcal, ycal, sample_at, series_styles=N
             continue  # Explicit panel frame, not a data curve with the same pen.
         name = style_name(g,series_styles) if series_styles else match_color(g.get('color'), cmap)
         if name:
-            segments=geometry_segments(g)
+            if horizontal_statistic is not None:
+                segments = [(tuple(item[1]), tuple(item[2])) for item in g['items'] if item[0] == 'l'
+                            and abs(item[1].y-item[2].y) < .05
+                            and width[0] <= abs(item[1].x-item[2].x) <= width[1]
+                            and item[1] in frame_box and item[2] in frame_box]
+            else:
+                segments=geometry_segments(g)
             reject_grid_bundle(segments)
             grouped[name].extend((a, b, g.get('width') or 0.0) for a, b in segments)
     series = {}
@@ -177,7 +189,7 @@ def main():
     measurements, missing = {}, {}
     series, marks = extract_lines(page, job['frame'], job.get('color_map'),
                                   xcal, ycal, job['sample_at'],job.get('series_styles'),
-                                  job.get('insets', ()), measurements, missing)
+                                  job.get('insets', ()), measurements, missing, job.get('horizontal_statistic'))
     out = {'series': series,
            'calibration': {'x': {k: v for k, v in xcal.items() if k != 'f' and k != 'inv'},
                            'y': {k: v for k, v in ycal.items() if k != 'f' and k != 'inv'}}}
@@ -194,6 +206,8 @@ def main():
                 records[-1]['gap_candidate'] = missing[name, x]
     out['_evidence'] = record_envelope(job, records, out['calibration'], 'vector_lines')
     out['_evidence']['series_binding'] = job.get('series_styles') or job.get('color_map')
+    if job.get('horizontal_statistic'):
+        out['_evidence']['horizontal_statistic'] = job['horizontal_statistic']
     if job.get('insets'):
         out['_evidence']['excluded_insets_pt'] = job['insets']
     prefix = job.get('prefix' , f'p{job["page"]}_lines')
