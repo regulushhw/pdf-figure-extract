@@ -1,5 +1,6 @@
 """Synthetic preparation and runner integration; no research workbook writes."""
 import copy
+from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -63,11 +64,11 @@ class PrepareTests(unittest.TestCase):
         self.assertFalse((self.out / 'latest.json').exists())
 
     def test_route_limits_mixed_page_objects_to_target_panel(self):
-        from io import BytesIO
         raster = BytesIO()
         Image.new('RGB', (80, 80), 'white').save(raster, format='PNG')
         with fitz.open() as doc:
             page = doc.new_page(width=400, height=400)
+            page.draw_rect((15, 35, 160, 170), color=None, fill=(1, 1, 1))
             page.insert_image((20, 40, 150, 160), stream=raster.getvalue(), keep_proportion=False)
             page.draw_rect((20, 40, 150, 160))
             page.draw_line((180, 60), (360, 130))
@@ -79,6 +80,7 @@ class PrepareTests(unittest.TestCase):
         bitmap = route_panel(self.out, 1, [18, 35, 155, 170])
         self.assertEqual(bitmap['geometry'], 'native_bitmap_first')
         self.assertEqual(len(bitmap['matching_frame_paths']), 1)
+        self.assertEqual(len(bitmap['bitmap_backdrop_paths']), 1)
         self.assertEqual(bitmap['axis_aligned_paths'], [[20, 90, 150, 90]])
         self.assertEqual(route_panel(self.out, 1, [175, 40, 380, 160])['geometry'],
                          'vector_first')
@@ -94,6 +96,20 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(configured['method_selection']['geometry'], 'native_bitmap_first')
         record = read(self.out / 'decisions.json')['parts'][0]
         self.assertTrue(Path(record['parameters']['image']).is_file())
+
+    def test_route_preserves_white_overlay_drawn_after_the_bitmap(self):
+        raster = BytesIO()
+        Image.new('RGB', (80, 80), '#cccccc').save(raster, format='PNG')
+        path = self.root / 'white-overlay.pdf'
+        with fitz.open() as doc:
+            page = doc.new_page(width=200, height=200)
+            page.insert_image((30, 30, 150, 150), stream=raster.getvalue(), keep_proportion=False)
+            page.draw_rect((30, 30, 150, 150), color=None, fill=(1, 1, 1))
+            doc.save(path)
+        prepare(path, self.out)
+        report = route_panel(self.out, 1, [30, 30, 150, 150])
+        self.assertEqual(report['geometry'], 'mixed_check_vector_coverage')
+        self.assertEqual(report['bitmap_backdrop_paths'], [])
 
     def test_printed_grid_preserves_unresolved_cell_and_source_tokens(self):
         path = self.root / 'table.pdf'
