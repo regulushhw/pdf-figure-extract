@@ -302,7 +302,21 @@ def check_discrete_x(spec, job, factor):
                          label not in positions or abs(positions[label] - p) * factor > 2
                          for p, label in checks):
         raise ValueError('x: independent printed label or tick position differs by more than 2 source pixels')
-    for item in job['items']:
+    if job.get('boxplots'):
+        ordered = list(positions.values())
+        if len(ordered) < 2:
+            raise ValueError('boxplot categories require at least two ordered positions')
+        for item in job['boxplots']:
+            label = item['identity'].get('x')
+            if label not in positions:
+                raise ValueError(f"{item['id']}: unknown boxplot category")
+            x = positions[label]
+            index = ordered.index(x)
+            previous = ordered[index-1] if index else 2*x-ordered[1]
+            following = ordered[index+1] if index+1 < len(ordered) else 2*x-ordered[-2]
+            if not (previous+x)/2 < item['roi'][0] < item['x'] < item['roi'][2] < (following+x)/2:
+                raise ValueError(f"{item['id']}: boxplot slot crosses its category boundary")
+    for item in job.get('items', []):
         label = item['identity'].get('x')
         anchor_x = item['anchor'][0]
         if label not in positions or abs(positions[label] - anchor_x) * factor > 2:
@@ -331,7 +345,9 @@ def check_job(card, job, method, bind=False):
         factor = spec.get('native_px_per_unit', 1)
         if type(factor) not in (int, float) or not math.isfinite(factor) or factor <= 0:
             raise ValueError(f'{axis}: invalid native pixel scale')
-        if axis == 'x' and method == 'manual_points' and spec['kind'] in ('category', 'printed_ticks'):
+        if axis == 'x' and (method == 'manual_points' or
+                            (method == 'bitmap_bar_ranges' and job.get('boxplots') and
+                             not job.get('bars') and not job.get('capped_ranges'))) and spec['kind'] in ('category', 'printed_ticks'):
             check_discrete_x(spec, job, factor)
             continue
         checks = spec['check_ticks']
@@ -364,6 +380,10 @@ def configured_points(job, method):
                 yield item['id'], item['identity'].get('series'), item['identity'].get('x'), role
         for item in job.get('capped_ranges', []):
             for role in item.get('review_roles', ('capped_top', 'capped_bottom')):
+                yield item['id'], item['identity'].get('series'), item['identity'].get('x'), role
+        for item in job.get('boxplots', []):
+            default_roles = ('q3', 'median', 'q1', 'upper_whisker', 'lower_whisker')
+            for role in item.get('review_roles', default_roles):
                 yield item['id'], item['identity'].get('series'), item['identity'].get('x'), role
     elif method in ('wpd', 'vector_lines'):
         names = ([s['name'] for s in job['series']] if method == 'wpd' else

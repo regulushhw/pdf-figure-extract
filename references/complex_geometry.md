@@ -13,6 +13,10 @@
 
 固定方法`bitmap_bar_ranges`，脚本`tools/complex_bars.py`。使用现有NumPy/Pillow和OpenCV形态学；OpenCV是可选依赖，见requirements-complex.txt，不在任务运行中自动安装。
 
+箱线图沿用同一方法，配置 `boxplots`。每个箱填写 `id`、`panel`、`identity`、`roi`、中心 `x` 和从中心到箱边的原图像素距离 `box_half_width`。槽位应避开图例和相邻箱，包含预期须线。程序检验箱内三条横线和两侧的连通性，再寻找与箱体连通的短横帽。默认覆盖 `q3`、`median`、`q1`、`upper_whisker`、`lower_whisker`，可用 `review_roles` 指定任务要求的统计量。须线断开或存在多个候选时进入复核。此配置使用标定后的纵轴，无需零线。
+
+箱线任务使用分类横轴时，在 `gate_axes.x` 记录类别中心的原图像素位置及独立复查位置，`identity.x` 填写对应类别。程序以相邻类别中心的中点划分各组。组内箱可以偏离类别中心，但取数区域必须完整落在所属类别内。
+
 ```json
 {
   "sources":{"s":{"image":"source.png"}},

@@ -9,7 +9,7 @@ from PIL import Image,ImageDraw
 import fitz
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
-from complex_bars import analyze_bar,analyze_capped,body_baseline_at,fill_bar_interiors,locate_group_slots,run as bar_run
+from complex_bars import analyze_bar,analyze_boxplot,analyze_capped,body_baseline_at,fill_bar_interiors,locate_group_slots,run as bar_run
 from complex_curves import track,shared_ink,run as curve_run
 from run_task import Runner,write,read
 
@@ -28,6 +28,18 @@ class GeometryTests(unittest.TestCase):
         return np.asarray(im)[:,:,0]<100,im
 
     def spec(self):return {'id':'bar','panel':'p','identity':{'series':'s'},'roi':[35,10,55,130],'x':45}
+
+    def test_boxplot_requires_connected_whiskers(self):
+        mask = np.zeros((75, 55), dtype=bool)
+        mask[[20, 30, 41], 15:36] = True
+        mask[20:42, [15, 35]] = True
+        mask[9:21, 25] = True
+        mask[[9, 55], 20:31] = True
+        roles, flags, _ = analyze_boxplot(mask, {'roi': [11, 5, 39, 60], 'x': 25, 'box_half_width': 10})
+        self.assertEqual(roles['median'], [[25, 30]])
+        self.assertEqual(roles['upper_whisker'], [[25, 9]])
+        self.assertEqual(roles['lower_whisker'], [])
+        self.assertEqual(flags, ['lower_whisker_ambiguous'])
 
     def test_positive_bar_tip_separate_from_stem_endpoints(self):
         mask,_=self.mask();roles,flags,evidence=analyze_bar(mask,self.spec(),90)
