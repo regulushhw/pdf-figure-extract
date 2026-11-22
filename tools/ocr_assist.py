@@ -103,11 +103,11 @@ def tick_strokes(image, bounds, axis, side):
     if support.max() < .5:
         return []
     line = around[np.lexsort((abs(around-edge), -support))[0]]
-    extent = line + outward * np.arange(-1, 5)
-    if min(extent) < 0 or max(extent) >= gray.shape[1]:
-        return []
-    band = gray[start:stop, extent] < 170
-    connected = band[:, 1:5].all(axis=1)
+    connected = np.zeros(stop - start, dtype=bool)
+    for direction in (outward, -outward):
+        extent = line + direction * np.arange(4)
+        if min(extent) >= 0 and max(extent) < gray.shape[1]:
+            connected |= (gray[start:stop, extent] < 170).all(axis=1)
     edges = np.flatnonzero(np.diff(np.r_[False, connected, False]))
     return [(start + (lo + hi - 1) / 2, [int(start + lo), int(start + hi - 1)])
             for lo, hi in edges.reshape(-1, 2) if hi - lo <= 5]
