@@ -30,6 +30,8 @@ python tools/ocr_assist.py recognize 原图.png 过程目录 --engine tesseract 
 
 复制模板为确认文件，保留摘要，实际看图后填写：
 
+百分号被 OCR 读成 `0/0` 或负号被读成长横线时，只有字样附近存在唯一刻度笔画、同组另有正常百分比刻度，才会提出修正候选。原始字样保留在 `ocr_text_needs_confirmation`。确认模板中带修正值的项逐个按原图复核。
+
 ```json
 {
   "analysis_fingerprint":"沿用模板",
