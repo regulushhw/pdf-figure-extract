@@ -87,18 +87,69 @@ def axis_fit(axis):
     tolerance = float(axis.get("max_residual_px", 1.0))
     if not math.isfinite(tolerance) or tolerance < 0 or residual > tolerance:
         raise ValueError(f"tick calibration residual {residual:.4g}px exceeds {tolerance}px")
+    check_residual = 0.0
     for check in axis.get("check_ticks", []):
         pos, value = pair(check)
         error = abs((axis_forward(value, kind)-intercept)/slope-float(pos))
         if error > tolerance:
             raise ValueError(f"independent tick residual {error:.4g}px exceeds {tolerance}px")
+        check_residual = max(check_residual, error)
     return {"slope": float(slope), "intercept": float(intercept),
-            "max_residual_px": residual, "coordinate": axis["coordinate"],
+            "max_residual_px": residual, "max_check_residual_px": check_residual,
+            "coordinate": axis["coordinate"],
             "ticks": ticks.tolist(), "unit": axis["unit"], "kind": kind}
 
 
 def value_at_position(pos, calibration):
     return axis_inverse(calibration["slope"]*pos+calibration["intercept"], calibration.get("kind", "linear"))
+
+
+def calibrated_axis(spec, coordinate):
+    kind = spec.get('kind', spec.get('scale', 'linear'))
+    if spec.get('scale', kind) != kind:
+        raise ValueError('conflicting axis kind and scale')
+    fit = axis_fit({**spec, 'kind': kind, 'coordinate': coordinate, 'unit': spec.get('unit', '')})
+    slope, intercept = fit['slope'], fit['intercept']
+    return {**fit, 'f': lambda pos: value_at_position(pos, fit),
+            'inv': lambda value: (axis_forward(value, kind)-intercept)/slope,
+            'fit': [slope, intercept], 'resid': fit['max_residual_px'],
+            'measurement_resid': max(fit['max_residual_px'], fit['max_check_residual_px']),
+            'n': len(fit['ticks'])}
+
+
+def measured_precision(value, bounds):
+    """Bound display precision by the larger side of the source interval."""
+    radius = max(abs(bound-value) for bound in bounds)
+    if math.isfinite(radius) and radius > 0:
+        return max(0, min(15, math.floor(-math.log10(radius))))
+    return None
+
+
+def pixel_measurement(item, role, pixel, calibration):
+    evidence = item.get('complex_evidence', {})
+    if pixel is None or calibration['coordinate'] != 'y':
+        return None
+    if role == 'value':
+        bounds = evidence.get('observed_ink_y_bounds')
+        if pixel != evidence.get('selected') or evidence.get('interpolation_bracket') is not None:
+            return None
+    else:
+        bounds = evidence.get('role_y_bounds_px', {}).get(role)
+        candidates = item.get('source_candidates', item['roles']).get(role)
+        if candidates != [pixel]:
+            return None
+    if bounds is None:
+        return None
+    low, high = pair(bounds)
+    if not low <= pixel[1] <= high or low > high:
+        raise ValueError('observed vertical bounds must contain the selected pixel')
+    residual = max(calibration['max_residual_px'], calibration['max_check_residual_px'])
+    source_bounds = [low - .5 - residual, high + .5 + residual]
+    values = sorted(value_at_position(pos, calibration) for pos in source_bounds)
+    decimals = measured_precision(value_at_position(pixel[1], calibration), values)
+    if decimals is not None:
+        return {'source_y_bounds_px': source_bounds, 'value_bounds': values,
+                'display_decimals': decimals}
 
 
 def value_at(pixel, calibration):
@@ -172,6 +223,22 @@ def load_job(path):
     return path, job, sources, panels
 
 
+def interpolation_basis(item, role, pixel):
+    """Retain a valid bracket only for the point it actually supports."""
+    evidence = item.get('complex_evidence', {})
+    bracket = evidence.get('interpolation_bracket')
+    if role != 'value' or pixel is None or bracket is None or pixel != evidence.get('selected'):
+        return None
+    if len(bracket) != 2:
+        raise ValueError('interpolated reading requires two source anchors')
+    (left, before), (right, after) = map(pair, bracket)
+    x, y = pair(pixel)
+    if not left < x < right or not math.isclose(
+            y, before + (after-before)*(x-left)/(right-left), abs_tol=1e-7, rel_tol=0):
+        raise ValueError('interpolated point does not match its source bracket')
+    return {'kind':'local_interpolation','bracket_px':[[left,before],[right,after]]}
+
+
 def initial_result(job_path, job, sources, panels):
     items = []
     for item in job["items"]:
@@ -182,7 +249,13 @@ def initial_result(job_path, job, sources, panels):
                            "pixel": pixel,
                            "value": value_at(pixel, panels[item["panel"]]["calibration"]) if pixel else None,
                            "method": "script_proposal", "review": None}
-        items.append({**copy.deepcopy(item), "roles": roles})
+            basis = interpolation_basis(item, role, pixel)
+            if basis is not None:
+                roles[role]['source_basis'] = basis
+            measurement = pixel_measurement(item, role, pixel, panels[item["panel"]]["calibration"])
+            if measurement is not None:
+                roles[role]['measurement'] = measurement
+        items.append({**copy.deepcopy(item), "roles": roles, "source_candidates": copy.deepcopy(item["roles"])})
     return {"schema_version": 1, "job": str(job_path), "job_sha256": digest(job_path),
             "sources": sources, "panels": panels, "items": items, "history": []}
 
@@ -340,6 +413,7 @@ def render_sheet(items, sources, panels, path, zoom=3, columns=3, context=False,
         ay = marked_origin[1] + (item["anchor"][1] - y0) * zoom + center_offset
         draw.line((ax, marked_origin[1], ax, marked_origin[1] + crop.height - 1), fill=(40, 160, 40))
         draw.rectangle((ax - 3, ay - 3, ax + 3, ay + 3), outline=(0, 110, 0), width=1)
+        excluded_label_y = []
         for ri, (role, candidates) in enumerate(item["roles"].items()):
             for ci, p in enumerate(candidates):
                 px = marked_origin[0] + (p[0] - x0) * zoom + center_offset
@@ -347,7 +421,16 @@ def render_sheet(items, sources, panels, path, zoom=3, columns=3, context=False,
                 color = colors[ri % len(colors)]
                 draw.line((px - 5, py, px + 5, py), fill=color, width=2)
                 label = item.get('role_labels', {}).get(role, f"{role[0]}{ci}")
-                draw.text((px + 7, py - 7), label, font=font(11), fill=color)
+                if role.startswith('excluded'):
+                    tx = max(marked_origin[0], px - draw.textlength(label, font=font(11)) - 8)
+                    ty = py - 7
+                    while any(abs(ty - previous) < 12 for previous in excluded_label_y):
+                        ty -= 12
+                    excluded_label_y.append(ty)
+                    draw.line((px-6, py, tx+draw.textlength(label, font=font(11)), ty+6), fill=color)
+                    draw.text((tx, ty), label, font=font(11), fill=color)
+                else:
+                    draw.text((px + 7, py - 7), label, font=font(11), fill=color)
         draw.rectangle((ox, oy, ox + tile_w - 1, oy + tile_h - 1), outline=(180, 180, 180))
         placements[item["id"]] = {"sheet": path.name, "source_roi": item["roi"],
                                     "raw_origin": raw_origin, "marked_origin": marked_origin,
@@ -753,6 +836,13 @@ def apply(manifest_path, decisions_path, output_path, resume=None):
             "method": method, "review": {"reviewer": reviewer, "note": note,
                 "batch_id": batch_id, "manifest": str(manifest_path), "view": item["view"],
                 "evidence_scope": "visual self-check; not independent validation", "previous": old}}
+        source_record = records[ident]
+        basis = interpolation_basis(source_record, role, pixel)
+        if basis is not None:
+            source_record['roles'][role]['source_basis'] = basis
+        measurement = pixel_measurement(source_record, role, pixel, cal)
+        if measurement is not None:
+            records[ident]["roles"][role]['measurement'] = measurement
     result["history"].append({"batch_id": batch_id, "decision_sha256": digest(decisions_path),
                                "decisions": len(seen), "reviewer": reviewer})
     result["summary"] = summary(result)
@@ -788,7 +878,24 @@ def apply(manifest_path, decisions_path, output_path, resume=None):
 
 def point_location(item, role):
     state=item['roles'][role]
-    return state['pixel'] or (state.get('review') or {}).get('previous',{}).get('pixel') or item['anchor']
+    measured = state['pixel'] or (state.get('review') or {}).get('previous',{}).get('pixel')
+    if measured is not None:
+        return measured
+    candidates = item.get('source_candidates', {}).get(role, [])
+    if candidates:
+        return candidates[0]
+    x = item['identity'].get('source_pixel_x')
+    if type(x) in (int, float) and item['roi'][0] <= x <= item['roi'][2]:
+        return [x, item['anchor'][1]]
+    return item['anchor']
+
+
+def excluded_cap_points(record, role):
+    if role not in ('capped_top', 'capped_bottom'):
+        return []
+    end = 'top' if role == 'capped_top' else 'bottom'
+    return [[pair['x'], pair[end]] for pair in
+            record.get('complex_evidence', {}).get('outside_stem_window', [])]
 
 
 def inspect_points(result, folder, revision, refs=None, regions=None, image_cache=None, ghosts=(), view_mode='points'):
@@ -797,22 +904,82 @@ def inspect_points(result, folder, revision, refs=None, regions=None, image_cach
     records={i['id']:i for i in result['items']}
     lookup={**{i['id']:i for i in ghosts},**records}
     if refs is None:
-        refs=[{'id':i['id'],'role':role} for i in result['items'] for role,state in i['roles'].items()
-              if state['status']=='needs_review' or (i.get('flags') and state['status']!='reviewed')][:6]
+        queue=[{'id':i['id'],'role':role} for i in result['items'] for role,state in i['roles'].items()
+               if state['status']=='needs_review' or (i.get('flags') and state['status']=='automatic_candidate')]
+        refs=queue[:6]
+        if refs and view_mode=='points' and refs[0]['role']=='value':
+            first=lookup[refs[0]['id']]
+            spans=first.get('complex_evidence',{}).get('shared_ink_spans',[])
+            if spans:
+                span=spans[0]['x_bounds']
+                members=[r for r in queue if r['role']=='value' and lookup[r['id']]['panel']==first['panel']
+                         and any(s['x_bounds']==span for s in lookup[r['id']].get('complex_evidence',{}).get('shared_ink_spans',[]))]
+                refs=sorted(members,key=lambda ref:point_location(lookup[ref['id']],ref['role'])[0])[:6]
         if not refs:refs=[{'id':i['id'],'role':role} for i in result['items'] for role in i['roles']][:6]
     if len(refs)>12:raise ValueError('inspect at most12 point-role references per readable batch')
     if len({(r['id'],r['role']) for r in refs})!=len(refs):raise ValueError('duplicate point-role reference')
     if view_mode not in ('points','objects','objects_full'):raise ValueError('unknown fixed view mode')
     cards=[];views=[]
+    sections={}
     for ref in refs:
         record=lookup[ref['id']];role=ref['role'];p=point_location(record,role)
         bounds=result['panels'][record['panel']]['bounds']
+        options = record.get('source_candidates', {}).get(role, [])
+        nearby = [q for q in options if abs(q[0]-p[0]) <= 28 and abs(q[1]-p[1]) <= 100]
+        y_positions = [p[1], *(q[1] for q in nearby)]
+        if max(y_positions)-min(y_positions)>130:
+            y_positions = [p[1]]
         box=[max(int(bounds[0]),math.floor(p[0]-28)),max(int(bounds[1]),math.floor(p[1]-22)),
              min(int(bounds[2]),math.ceil(p[0]+28)),min(int(bounds[3]),math.ceil(p[1]+22))]
+        box[1] = max(int(bounds[1]),math.floor(min(y_positions)-22))
+        box[3] = min(int(bounds[3]),math.ceil(max(y_positions)+22))
         pixel=record['roles'][role]['pixel'] if record['id'] in records else None
-        cards.append({**copy.deepcopy(record),'id':f'{record["id"]}::{role}','roi':box,
-                      'anchor':p,'roles':{role:[pixel] if pixel else []}})
-        views.append({'id':record['id'],'role':role,'panel':record['panel'],'bounds':box})
+        visible = [(i,q) for i,q in enumerate(options) if inside(q,box) and q != pixel]
+        card = {**copy.deepcopy(record),'id':f'{record["id"]}::{role}','roi':box,
+                'anchor':p,'roles':{role:[pixel] if pixel else []},'role_labels':{}}
+        for i,q in visible:
+            key=f'candidate{i}'
+            card['roles'][key]=[q]
+            card['role_labels'][key]=f'c{i}'
+        for i, q in enumerate(excluded_cap_points(record, role), 1):
+            if inside(q, box):
+                key = f'excluded{i}'
+                card['roles'][key] = [q]
+                card['role_labels'][key] = f'x{i}'
+        basis = record['roles'][role].get('source_basis')
+        if basis:
+            bracket = [q for q in basis['bracket_px'] if inside(q,box)]
+            if bracket:
+                card['roles']['bracket'] = bracket
+        view = {'id':record['id'],'role':role,'panel':record['panel'],'bounds':box}
+        cards.append(card)
+        views.append(view)
+        spans = record.get('complex_evidence', {}).get('shared_ink_spans', [])
+        if spans and role == 'value':
+            sections.setdefault((record['panel'], *spans[0]['x_bounds']), []).append(len(cards)-1)
+    if view_mode == 'points' and sections:
+        replacements, combined = {}, set()
+        for (panel, left, right), indexes in sections.items():
+            if len(indexes) < 2:
+                continue
+            boxes = [views[i]['bounds'] for i in indexes]
+            box = [min(b[0] for b in boxes), min(b[1] for b in boxes),
+                   max(b[2] for b in boxes), max(b[3] for b in boxes)]
+            if box[2]-box[0]>180 or box[3]-box[1]>180:
+                continue
+            group = {'id':f'{panel}: shared ink {left}-{right}', 'panel':panel,
+                     'roi':box, 'anchor':cards[indexes[0]]['anchor'],
+                     'identity':{'points':len(indexes)}, 'roles':{}, 'role_labels':{}}
+            for n, i in enumerate(indexes, 1):
+                views[i].update(bounds=box, label=n)
+                for kind, candidates in cards[i]['roles'].items():
+                    key=f'{n}_{kind}'
+                    group['roles'][key]=candidates
+                    label=cards[i]['role_labels'].get(kind)
+                    group['role_labels'][key]=f'{n}:{label}' if label else f'{n}b' if kind=='bracket' else str(n)
+            replacements[indexes[0]]=group
+            combined.update(indexes[1:])
+        cards=[replacements.get(i, card) for i, card in enumerate(cards) if i not in combined]
     # Object strips keep all selected endpoints and their full existing ROIs
     # together. Nothing here infers a month, series, cap or missing endpoint.
     if view_mode in ('objects','objects_full'):
@@ -855,6 +1022,11 @@ def inspect_points(result, folder, revision, refs=None, regions=None, image_cach
                 record=lookup[ref['id']];state=record['roles'][ref['role']]
                 key=f'p{n}';roles[key]=[state['pixel']] if state['pixel'] else []
                 labels[key]=str(n)
+                for i, point in enumerate(excluded_cap_points(record, ref['role']), 1):
+                    if inside(point, box):
+                        key = f'excluded{n}_{i}'
+                        roles[key] = [point]
+                        labels[key] = f'{n}:x{i}'
                 views.append({'id':ref['id'],'role':ref['role'],'panel':panel_id,'bounds':box,
                               'full_bounds':full_box,'label':n,'focus_is_heuristic':view_mode=='objects'})
             cards.append({'id':f'{panel_id}: '+('ink focus' if view_mode=='objects' else 'full object'),'panel':panel_id,
@@ -893,6 +1065,11 @@ def inspect_points(result, folder, revision, refs=None, regions=None, image_cach
         role=record['roles'][ref['role']]
         states.append({'id':ref['id'],'role':ref['role'],'pixel':role['pixel'] if active else None,
                        'value':role['value'] if active else None,'active':active,
+                       'source_candidates':record.get('source_candidates', {}).get(ref['role'], []),
+                       'excluded_cap_points':excluded_cap_points(record, ref['role']),
+                       'shared_ink_spans':record.get('complex_evidence', {}).get('shared_ink_spans', []),
+                       'source_basis':role.get('source_basis'),
+                       'measurement':role.get('measurement'),
                        'label':next((v.get('label') for v in views if v['id']==ref['id'] and v['role']==ref['role']),None),
                        'identity':{k:v for k,v in record['identity'].items()
                                    if k in ('series','scenario','model','period','month')}})
@@ -918,7 +1095,8 @@ def edit_points(result, request, observation):
     if not operations or len(operations)>12:raise ValueError('provide1..12 fixed point operations per local batch')
     updated=copy.deepcopy(result);records={i['id']:i for i in updated['items']}
     affected=[];events=[];ghosts=[]
-    shown={(v['id'],v['role']) for v in observation['views']}
+    shared_checks = {}
+    shown={(v['id'],v['role']):v for v in observation['views']}
     def visible(panel,p):
         return any(v['panel']==panel and inside(p,v['bounds']) for v in observation['views'])
     for op in operations:
@@ -927,7 +1105,14 @@ def edit_points(result, request, observation):
             raise ValueError('stable nonempty string ID and role required')
         note=op.get('note',request['note'])
         if not note.strip():raise ValueError('operation reason required')
-        if kind not in ('move','delete','add','reassign','accept','set_axis'):raise ValueError('unknown point operation')
+        if kind not in ('move','delete','add','reassign','accept','set_axis','choose_candidate'):
+            raise ValueError('unknown point operation')
+        if 'confirm_shared_with' in op:
+            peer_id = op['confirm_shared_with']
+            if (kind != 'accept' or role != 'value' or ident in shared_checks
+                    or not isinstance(peer_id, str) or not peer_id or peer_id == ident):
+                raise ValueError('shared ink confirmation requires two distinct accepted readings')
+            shared_checks[ident] = peer_id
         old=copy.deepcopy(records.get(ident))
         if kind=='add' and ident not in records:
             panel=op['panel'];p=pair(op['pixel'])
@@ -942,6 +1127,10 @@ def edit_points(result, request, observation):
             if (ident,role) not in shown:raise ValueError('point-role not shown in current view')
             record=records[ident]
         prior=copy.deepcopy(record['roles'].get(role))
+        if role == 'value' and prior and prior.get('shared_measurement'):
+            previous_peer = records.get(prior['shared_measurement']['peer_id'])
+            if previous_peer is not None:
+                previous_peer['roles']['value'].pop('shared_measurement', None)
         if kind=='add' and prior and prior['pixel'] is not None:
             raise ValueError('point already exists; use move rather than add')
         previous={k:prior[k] for k in ('pixel','value','status')} if prior else None
@@ -951,6 +1140,20 @@ def edit_points(result, request, observation):
             else:
                 record['roles'][role]={'pixel':None,'value':None,'status':'explicit_missing','method':'point_deleted',
                     'review':{'note':note,'previous':previous,'evidence_scope':'visual self-check; not independent validation'}}
+                missing_kind = op.get('missing_kind')
+                if missing_kind is not None:
+                    if missing_kind not in ('source_unreadable','source_uncovered'):
+                        raise ValueError('unknown source gap criterion')
+                    view = shown[ident,role]['bounds']
+                    roi = record['roi']
+                    box = [max(view[0],roi[0]), max(view[1],roi[1]),
+                           min(view[2],roi[2]), min(view[3],roi[3])]
+                    if box[0]>=box[2] or box[1]>=box[3]:
+                        raise ValueError('source gap requires a local view inside the original ROI')
+                    source = updated['sources'][updated['panels'][record['panel']]['source']]
+                    record['roles'][role]['review']['missing_evidence'] = {
+                        'kind':missing_kind,'reason':note,'image':source['image'],
+                        'sha256':source['sha256'],'bbox':box}
         else:
             if kind=='reassign':
                 if len(record['roles'])!=1:raise ValueError('reassign whole multi-role objects explicitly outside point editing')
@@ -972,7 +1175,16 @@ def edit_points(result, request, observation):
                     p=list(prior['pixel'] or record['anchor'])
                     axis=updated['panels'][record['panel']]['calibration']['coordinate']
                     p[0 if axis=='x' else 1]=float(pos)
-                else:p=pair(op['pixel'])
+                elif kind=='choose_candidate':
+                    candidates=record.get('source_candidates',{}).get(role,[])
+                    index=op.get('candidate_index')
+                    if type(index) is not int or not 0<=index<len(candidates):
+                        raise ValueError('candidate index is outside the source candidate list')
+                    p=pair(candidates[index])
+                    if not inside(p,shown[ident,role]['bounds']):
+                        raise ValueError('source candidate is outside this point review view')
+                else:
+                    p=pair(op['pixel'])
                 if not visible(record['panel'],p) or not inside(p,updated['panels'][record['panel']]['bounds']):
                     raise ValueError('edit target outside current shown regions; inspect destination first')
             # ROI can expand after a shown correction; stable ID and original
@@ -982,9 +1194,30 @@ def edit_points(result, request, observation):
             record['roles'][role]={'pixel':p,'value':value_at(p,updated['panels'][record['panel']]['calibration']),
                 'status':'reviewed','method':f'point_{kind}',
                 'review':{'note':note,'previous':previous,'evidence_scope':'visual self-check; not independent validation'}}
+            basis = interpolation_basis(record, role, p)
+            if basis is not None:
+                record['roles'][role]['source_basis'] = basis
+            measurement = pixel_measurement(record, role, p, updated['panels'][record['panel']]['calibration'])
+            if measurement is not None:
+                record['roles'][role]['measurement'] = measurement
         affected.append({'id':ident,'role':role})
         events.append({'op':kind,'id':ident,'role':role,'before':previous,
                        'previous_identity':old['identity'] if old else None,'note':note})
+    for ident, peer_id in shared_checks.items():
+        if shared_checks.get(peer_id) != ident:
+            raise ValueError('confirm both shared readings in the same viewed batch')
+        record, peer = records[ident], records[peer_id]
+        reading = record['roles']['value']
+        pixel = reading['pixel']
+        spans = record.get('complex_evidence', {}).get('shared_ink_spans', [])
+        matches = [span for span in spans if span.get('shared_source_y_bounds_px')
+                   and f"{span.get('peer_trace_id')}-{int(pixel[0])}" == peer_id]
+        if (record['panel'] != peer['panel'] or pixel != peer['roles']['value']['pixel']
+                or len(matches) != 1
+                or not matches[0]['shared_source_y_bounds_px'][0] <= pixel[1] <= matches[0]['shared_source_y_bounds_px'][1]):
+            raise ValueError('shared readings must use the same source pixel within observed common ink')
+        reading['shared_measurement'] = {'peer_id': peer_id, 'evidence': matches[0],
+                                         'kind': 'reviewed_shared_ink_approximation'}
     updated['history'].append({'kind':'point_edits','note':request['note'],'events':events})
     updated['summary']=summary(updated)
     return updated,list({(r['id'],r['role']):(r) for r in affected}.values()),ghosts

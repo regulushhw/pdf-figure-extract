@@ -9,7 +9,7 @@ from PIL import Image,ImageDraw
 import fitz
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
-from complex_bars import analyze_bar,analyze_capped,fill_bar_interiors,locate_group_slots,run as bar_run
+from complex_bars import analyze_bar,analyze_capped,body_baseline_at,fill_bar_interiors,locate_group_slots,run as bar_run
 from complex_curves import track,shared_ink,run as curve_run
 from run_task import Runner,write,read
 
@@ -30,15 +30,31 @@ class GeometryTests(unittest.TestCase):
     def spec(self):return {'id':'bar','panel':'p','identity':{'series':'s'},'roi':[35,10,55,130],'x':45}
 
     def test_positive_bar_tip_separate_from_stem_endpoints(self):
-        mask,_=self.mask();roles,flags,_=analyze_bar(mask,self.spec(),90)
+        mask,_=self.mask();roles,flags,evidence=analyze_bar(mask,self.spec(),90)
         self.assertEqual(roles['bar_tip'],[[45,60.]])
         self.assertEqual(roles['uncapped_top'],[[45,40.]])
         self.assertEqual(roles['uncapped_bottom'],[[45,120.]])
         self.assertFalse(flags)
+        self.assertEqual(evidence['role_y_bounds_px'],
+                         {'bar_tip':[60,60], 'uncapped_top':[40,40], 'uncapped_bottom':[120,120]})
 
     def test_negative_bar_tip(self):
         mask,_=self.mask(negative=True);roles,_,_=analyze_bar(mask,self.spec(),90)
         self.assertEqual(roles['bar_tip'],[[45,110.]])
+
+    def test_uncapped_guide_returns_original_source_endpoint_pixels(self):
+        mask=np.zeros((140,130),dtype=bool)
+        mask[60:91,54:67]=True
+        for y in range(40,121):
+            x=round(62-.08*(y-45))
+            mask[y,x]=True
+        spec={'roi':[48,20,73,130],'x':60,'stem_guide':[[62,45],[57.2,105]]}
+        roles,flags,evidence=analyze_bar(mask,spec,90)
+        self.assertEqual(roles['bar_tip'],[[60,60.]])
+        self.assertEqual(roles['uncapped_top'],[[62,40.]])
+        self.assertEqual(roles['uncapped_bottom'],[[56,120.]])
+        self.assertFalse(flags)
+        self.assertEqual(evidence['stem_guide'],spec['stem_guide'])
 
     def test_capped_stem_not_mislabeled_as_uncapped(self):
         mask,_=self.mask(caps=True);roles,flags,_=analyze_bar(mask,self.spec(),90)
@@ -54,11 +70,48 @@ class GeometryTests(unittest.TestCase):
         roles,flags,_=analyze_capped(mask,spec,90)
         self.assertFalse(roles['capped_top']);self.assertTrue(flags)
 
+    def test_thick_uncapped_stem_does_not_supply_its_own_cap(self):
+        mask,_ = self.mask()
+        mask[40:61,43:48] = True
+        mask[40,43] = mask[40,47] = False
+        roles,flags,_ = analyze_bar(mask,self.spec(),90)
+        self.assertEqual(roles['uncapped_top'], [[45,40.]])
+        self.assertNotIn('uncapped_top_has_cap_requires_review', flags)
+
+    def test_thick_capped_stroke_is_one_pair_but_parallel_stems_remain_separate(self):
+        mask=np.zeros((140,130),dtype=bool)
+        mask[40:121,40:51]=True
+        mask[40:43,35:56]=True
+        mask[118:121,35:56]=True
+        spec={'roi':[34,20,56,130],'crosses_zero':True}
+        roles,flags,evidence=analyze_capped(mask,spec,90)
+        self.assertEqual(len(roles['capped_top']),1)
+        self.assertFalse(flags)
+        self.assertGreater(len(evidence['pairs'][0]['contributing_stem_columns']),1)
+        self.assertEqual(evidence['role_y_bounds_px'], {'capped_top':[40,42], 'capped_bottom':[118,120]})
+        mask[41:120,42:48]=False
+        roles,flags,_=analyze_capped(mask,spec,90)
+        self.assertEqual(len(roles['capped_top']),2)
+        self.assertIn('capped_pair_missing_or_ambiguous',flags)
+        roles, flags, evidence = analyze_capped(mask,{**spec,'stem_x_window':[39,42]},90)
+        self.assertEqual(len(roles['capped_top']),1)
+        self.assertTrue(39 <= roles['capped_top'][0][0] <= 42)
+        self.assertFalse(flags)
+        self.assertEqual(len(evidence['outside_stem_window']),1)
+
     def test_stem_alone_not_bar_or_zero(self):
         mask=np.zeros((140,130),dtype=bool);mask[30:120,45]=True
         roles,flags,_=analyze_bar(mask,self.spec(),90)
         self.assertEqual(roles['bar_tip'],[])
         self.assertIn('bar_body_missing_or_two_sided',flags)
+
+    def test_skewed_body_contact_keeps_original_tip_geometry(self):
+        mask=np.zeros((140,130),dtype=bool)
+        mask[60:85,40:51]=True
+        spec={**self.spec(),'range_expected':False}
+        panel={'bounds':[1,1,128,138],'body_baseline':[[5,94],[85,76]]}
+        self.assertFalse(analyze_bar(mask,spec,90)[0]['bar_tip'])
+        self.assertEqual(analyze_bar(mask,spec,body_baseline_at(panel,45))[0]['bar_tip'],[[45,60.]])
 
     def test_closed_outline_interior_supports_body_without_filling_background(self):
         mask=np.zeros((140,130),dtype=bool)
@@ -173,15 +226,116 @@ class GeometryTests(unittest.TestCase):
         self.assertTrue(all(not s['flags'] for s in result['samples']))
 
     def test_dashed_gap_remains_missing_not_interpolated(self):
-        mask,spec=self.curve(True);result=track(mask,spec)
-        self.assertEqual(result['status'],'proposed_unreviewed')
+        mask,spec=self.curve(True)
+        for pattern in ('dashed', 'dotted'):
+            with self.subTest(pattern=pattern):
+                result = track(mask, {**spec,'style':{**spec['style'],'pattern':pattern}})
+                self.assertEqual(result['status'],'proposed_unreviewed')
+                gap=next(s for s in result['samples'] if s['x']==18)
+                self.assertIsNone(gap['selected']);self.assertFalse(gap['candidates'])
+                self.assertIn('dash_gap_unmeasured',gap['flags'])
+
+    def test_dash_fragment_route_recovers_bracketed_gap_beside_solid_line(self):
+        mask,spec=self.curve(True)
+        mask[44,10:88]=True
+        spec.update(dash_fragment_span_px=8,interpolate_dash_gaps=True)
+        result=track(mask,spec)
         gap=next(s for s in result['samples'] if s['x']==18)
-        self.assertIsNone(gap['selected']);self.assertFalse(gap['candidates'])
-        self.assertIn('dash_gap_unmeasured',gap['flags'])
+        self.assertTrue(result['dash_fragment_path'])
+        self.assertEqual(gap['selected'],[18,40])
+        self.assertIn('local_dash_interpolation_review',gap['flags'])
+        self.assertTrue(gap['interpolation_bracket'])
+
+    def test_auto_anchors_keep_uncovered_positions_on_native_large_mask(self):
+        mask=np.zeros((700,900),dtype=bool)
+        mask[315,100:801]=True
+        spec={'roi':[1,1,898,698],'auto_anchors':True,'sample_x':[70,100,450,800,830]}
+        result=track(mask,spec)
+        self.assertEqual(result['anchors'],[[100,315],[800,315]])
+        self.assertEqual([s['selected'] for s in result['samples']],
+                         [None,[100,315],[450,315],[800,315],None])
+
+    def test_auto_anchors_refuse_two_unseparated_identities(self):
+        mask,spec=self.curve()
+        mask[90,10:91]=True
+        spec.pop('anchors')
+        spec['auto_anchors']=True
+        result=track(mask,spec)
+        self.assertEqual(result['status'],'disconnected')
+        self.assertTrue(all(s['flags']==['no_isolated_ink_anchors'] for s in result['samples']))
+
+    def test_auto_anchor_uses_track_width_to_reject_neighbour(self):
+        mask=np.zeros((80,130),dtype=bool)
+        mask[30,10:121]=True
+        mask[52:58,10:121]=True
+        spec={'roi':[1,1,128,78],'auto_anchors':True,'sample_x':[10,65,120],
+              'style':{'pattern':'solid','width_range':[1,2]}}
+        self.assertEqual([s['selected'] for s in track(mask,spec)['samples']],
+                         [[10,30],[65,30],[120,30]])
+
+    def test_component_span_removes_isolated_gray_fragments_before_tracking(self):
+        mask=np.zeros((80,130),dtype=bool)
+        mask[30,10:121]=True
+        for x in range(10,121,5):
+            mask[52,x:x+4]=True
+        spec={'roi':[1,1,128,78],'auto_anchors':True,'sample_x':[10,65,120],
+              'min_component_span_px':10}
+        self.assertEqual([s['selected'] for s in track(mask,spec)['samples']],
+                         [[10,30],[65,30],[120,30]])
+
+    def test_horizontal_stroke_detection_requires_broad_ink_and_does_not_erase_it(self):
+        mask=np.zeros((80,130),dtype=bool)
+        mask[30,10:121]=True
+        mask[45,1:129]=True
+        mask[61,12:32]=True
+        from complex_curves import find_horizontal_strokes
+        rows = find_horizontal_strokes(mask,[1,1,128,78],[46,61])
+        self.assertEqual(rows,[45])
+        self.assertTrue(mask[45,50])
+
+    def test_flat_data_curve_is_retained_even_at_a_suspected_rule_row(self):
+        mask=np.zeros((80,130),dtype=bool)
+        mask[45,1:129]=True
+        common={'roi':[1,1,128,78],'auto_anchors':True,'sample_x':[10,65,120]}
+        before=track(mask,common)
+        after=track(mask,{**common,'axis_rule_rows':[45]})
+        self.assertEqual(after['horizontal_stroke_rows'],[45])
+        self.assertEqual([s['selected'] for s in before['samples']],
+                         [[10,45],[65,45],[120,45]])
+        self.assertEqual([s['selected'] for s in after['samples']],
+                         [s['selected'] for s in before['samples']])
+        self.assertTrue(all('horizontal_stroke_identity_review' in s['flags'] for s in after['samples']))
+
+    def test_automatic_dash_does_not_offer_continuous_neighbour(self):
+        mask,spec=self.curve()
+        spec.pop('anchors')
+        spec.update(auto_anchors=True,style={'pattern':'dashed','max_gap_px':4})
+        result=track(mask,spec)
+        self.assertTrue(all(not s['candidates'] and 'dash_pattern_not_observed' in s['flags']
+                            for s in result['samples']))
+
+    def test_auto_trace_keeps_both_sides_of_a_long_gap(self):
+        mask=np.zeros((80,220),dtype=bool)
+        mask[30,10:90]=True
+        mask[30,120:211]=True
+        spec={'roi':[1,1,218,78],'auto_anchors':True,'sample_x':[10,50,100,150,210]}
+        result=track(mask,spec)
+        self.assertEqual(result['status'],'partial_unreviewed')
+        self.assertEqual([s['selected'] for s in result['samples']],
+                         [[10,30],[50,30],None,[150,30],[210,30]])
+        self.assertIn('recovered_from_right_anchor_review',result['samples'][3]['flags'])
 
     def test_gap_limit_stops_unconnected_trace(self):
         mask,spec=self.curve(True);spec['style']['max_gap_px']=3
         self.assertEqual(track(mask,spec)['status'],'disconnected')
+
+    def test_optional_dash_interpolation_keeps_ink_bracket(self):
+        mask,spec=self.curve(True)
+        spec['interpolate_dash_gaps']=True
+        gap=next(s for s in track(mask,spec)['samples'] if s['x']==18)
+        self.assertEqual(gap['selected'],[18,40])
+        self.assertEqual(gap['interpolation_bracket'],[[15,40],[22,40]])
+        self.assertIn('local_dash_interpolation_review',gap['flags'])
 
     def test_solid_does_not_skip_visible_ink_to_lower_cost(self):
         mask,spec=self.curve();spec['style']={'pattern':'solid','max_gap_px':2}
@@ -193,6 +347,27 @@ class GeometryTests(unittest.TestCase):
         mask[90:111,40:51]=True;mask[97:126,45]=True
         roles,flags,_=analyze_bar(mask,self.spec(),90)
         self.assertEqual(roles['uncapped_bottom'],[[45,125.]])
+
+    def test_wide_shared_ink_keeps_both_anchored_paths_reviewable(self):
+        mask=np.zeros((50,70),dtype=bool)
+        mask[10,5:61]=mask[30,5:61]=True
+        mask[10:31,20:36]=True
+        traces=[]
+        for y in (10,30):
+            spec={'roi':[4,4,62,40],'anchors':[[5,y],[60,y]],
+                  'sample_x':[15,25,40],'max_step_px':3,'style':{'width_range':[1,3]}}
+            traces.append({'id':str(y),'panel':'p','result':track(mask,spec)})
+        shared_ink(traces)
+        for trace,y in zip(traces,(10,30)):
+            left,overlap,right=trace['result']['samples']
+            self.assertEqual([item['selected'][1] for item in (left,overlap,right)],[y,y,y])
+            self.assertEqual(overlap['observed_ink_y_bounds'],[10,30])
+            self.assertIn('merged_ink_or_pen_width_conflict',overlap['flags'])
+            self.assertFalse(left.get('shared_ink_spans'))
+        # An inferred path is not a shared value when the tracks resolve to
+        # different positions in the same broad band.
+        self.assertNotEqual(traces[0]['result']['samples'][1]['selected'],
+                            traces[1]['result']['samples'][1]['selected'])
 
     def test_crossing_preserves_end_anchor_and_marks_shared_ink(self):
         mask,spec=self.curve()
@@ -244,6 +419,36 @@ class GeometryTests(unittest.TestCase):
              'traces':[{**spec,'id':'d','panel':'p','identity':{'series':'d'},'selector':{'mode':'gray','range':[0,80]}}]}
         write(self.root/'curve.json',job);summary=curve_run(self.root/'curve.json',self.root/'result')
         self.assertEqual(summary['missing_roles'],1)
+
+    def test_shared_range_requires_two_observed_pen_bounds(self):
+        def trace(name, bounds, interpolation=False):
+            point={'x':5,'selected':[5,10],'flags':[], 'observed_ink_y_bounds':bounds}
+            if interpolation:
+                point['interpolation_bracket']=[[4,10],[6,10]]
+            return {'id':name,'panel':'p','result':{'status':'proposed_unreviewed',
+                    'selected_path':[[5,10]],'samples':[point]}}
+        for interpolated in (False, True):
+            first, second = trace('a',[9,11]), trace('b',[10,12],interpolated)
+            shared_ink([first,second])
+            span = first['result']['samples'][0]['shared_ink_spans'][0]
+            self.assertEqual(span['peer_trace_id'],'b')
+            self.assertEqual(span.get('shared_source_y_bounds_px'), None if interpolated else [10,11])
+
+    def test_detected_horizontal_data_remains_a_readable_review_candidate(self):
+        mask = np.zeros((110, 110), dtype=bool)
+        mask[45, 5:106] = True
+        Image.fromarray(np.where(mask,0,255).astype('uint8')).save(self.root/'curve.png')
+        job={'sources':{'s':{'image':'curve.png'}},'panels':{'p':{'source':'s','bounds':[1,1,108,108],
+             'axis':{'coordinate':'y','ticks':[[10,100],[100,0]],'check_ticks':[[45,61.111111]],'unit':'flow'}}},
+             'traces':[{'id':'flat','panel':'p','identity':{'series':'flat'},'roi':[5,10,105,100],
+                        'anchors':[[10,45],[100,45]],'sample_x':[55],
+                        'selector':{'mode':'gray','range':[0,80]}}]}
+        write(self.root/'curve.json',job)
+        curve_run(self.root/'curve.json',self.root/'result')
+        result=read(self.root/'result/geometry.json')['records'][0]['result']
+        self.assertEqual(result['horizontal_review_candidates'][0]['row'],45)
+        self.assertEqual(result['samples'][0]['selected'],[55,45])
+        self.assertIn('horizontal_stroke_identity_review',result['samples'][0]['flags'])
 
 
 if __name__=='__main__':unittest.main()

@@ -51,3 +51,20 @@ trial自动编译所选项、调用现有run_task，统一返回检查图、失�
 prepare_seconds、operation_seconds分别是准备/当前动作时间；computer_seconds是提取子进程时间；elapsed_since_prepare_seconds_including_wait是从开始准备至今，包含Agent判断、用户等待和空闲，不含此前对话或工具开发。没有测模型token，不声称额度节省比例。
 
 验证：`python -X utf8 -B tests/test_prepare_task.py`。合成PDF/图片验证准备、规则图注、模板、真实提取入口、旧任务导入、缓存及输入变更；不证明任意论文的图义或取值准确。
+## 面板来源判定
+
+准备任务后，用 PDF 页码与面板在 PDF 页上的矩形坐标查询该区域：
+
+```text
+python tools/prepare_task.py route <package> --page 11 --bounds 80 110 510 370
+```
+
+先用可信的补充数据、正文或原表。需要读图时，`route` 返回与面板相交的嵌入图对象、像素尺寸、与面板相交的矢量路径和建议的几何起点。同页的其他面板不会参与该建议。单独出现的坐标轴直线不算矢量曲线证据；同一范围同时有位图和矢量对象时，检查目标系列是否被矢量路径覆盖，再决定是否转到原生位图。对象级证据仍需结合面板中系列的身份与刻度。
+
+与面板或同一嵌入位图边缘吻合的单个描边矩形单独列在 `matching_frame_paths`。单独的水平或竖直路径列在 `axis_aligned_paths`，只剩这类路径时返回 `axis_aligned_check_identity`，依据原图确认它属于坐标轴、基准线还是数据。
+
+准备曲线或点图任务时，可用 `configure <package> --part ID --method auto --bounds X0 Y0 X1 Y1` 选择首轮模板，并把面板选路证据写入配置。明确的矢量面板载入矢量折线模板，单一原生位图载入位图候选模板。混合对象、系列身份未定或准备包缺少对应原生位图时，命令会给出原因。后续仍需填写轴、系列和采样范围。编译任务会重查来源，并在编译后的 `scope.json` 留下选路证据。
+
+模板的 `x_kind`、`y_kind` 接受 `linear` 或 `log10`，用 `x_check_ticks`、`y_check_ticks` 填写独立回查刻度。编译时将这些字段连同单位传入读数器，位图模板按轴类型把采样值换算回原图像素列。
+
+矢量折线任务可在 job 中声明 `insets`，每项为主图框内的 PDF 点坐标矩形。只跳过边界完全落在插图区内的描边路径，主图经过该区域的路径仍可取值。轴标定使用任务关卡校验过的同一组拟合刻度；普通轴用 `kind: "linear"`，原图刻度值在对数刻度上时用 `kind: "log10"`。如果原图已经把纵坐标标成对数后的数值，按线性轴读取印刷读数。

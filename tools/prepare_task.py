@@ -24,7 +24,9 @@ import fitz
 from scan_pages import caption_matches, scan_page
 from run_task import (Runner, METHODS, EXTERNAL, REPO, TOOLS, digest, inside,
                       read, readonly_tools, sha, write)
-from review_points import axis_fit
+from review_points import axis_fit, axis_forward
+from extraction_gate import PRINTED_NUMBER, printed_token
+from openpyxl.utils.cell import coordinate_from_string, column_index_from_string, get_column_letter
 
 def utc():
     return datetime.now(timezone.utc).isoformat()
@@ -202,15 +204,23 @@ def compact_job(part, pdf, page, base):
     samples = p.get('sample_at', [])
     if not samples or any(type(x) not in (int, float) or not math.isfinite(x) for x in samples) or len(set(samples)) != len(samples):
         raise ValueError('nonempty finite unique sample_at required')
+    axes = {}
+    for coordinate in ('x', 'y'):
+        axis = {'coordinate': coordinate, 'ticks': p[f'{coordinate}_ticks'],
+                'unit': p.get('x_unit' if coordinate == 'x' else 'unit', ''),
+                'kind': p.get(f'{coordinate}_kind', 'linear')}
+        for key in ('check_ticks', 'max_residual_px'):
+            if f'{coordinate}_{key}' in p:
+                axis[key] = p[f'{coordinate}_{key}']
+        axes[coordinate] = axis
+    xfit = axis_fit(axes['x'])
+    axis_fit(axes['y'])
     if method == 'vector_lines':
-        from calib import fit_axis
-        fit_axis([tuple(t) for t in p['x_ticks']])
-        fit_axis([tuple(t) for t in p['y_ticks']])
         job = {'pdf': str(pdf), 'page': page, 'figure': part['candidate_id'],
                'conditions': part['conditions'], 'frame': p['frame'],
-               'x': {'ticks': p['x_ticks']}, 'y': {'ticks': p['y_ticks']},
+               **axes,
                'sample_at': p['sample_at']}
-        for key in ('color_map', 'series_styles'):
+        for key in ('color_map', 'series_styles', 'insets'):
             if key in p: job[key] = p[key]
         names = list(p.get('color_map', {}).values()) or [s['name'] for s in p.get('series_styles', [])]
         if set(names) != set(part['scope']['series']):
@@ -221,15 +231,13 @@ def compact_job(part, pdf, page, base):
         if any(type(v) not in (float,int) or not math.isfinite(v) or int(v) != v for v in bounds):
             raise ValueError('bitmap bounds must use integer source-pixel coordinates')
         bounds = [int(v) for v in bounds]
-        xaxis = axis_fit({'coordinate': 'x', 'ticks': p['x_ticks'], 'unit': p['x_unit']})
-        axis = {'coordinate': 'y', 'ticks': p['y_ticks'], 'unit': p['unit']}
-        axis_fit(axis)
         if set(s['name'] for s in p['series']) != set(part['scope']['series']):
             raise ValueError('series selectors must match declared scope')
         items = []
         for si, series in enumerate(p['series']):
             for xi, x in enumerate(p['sample_at']):
-                column = round((x-xaxis['intercept'])/xaxis['slope'])
+                axis_value = axis_forward(x, xfit['kind'])
+                column = round((axis_value-xfit['intercept'])/xfit['slope'])
                 left, top, right, bottom = bounds
                 if not left < column < right:
                     raise ValueError('sampling column requires room on both sides inside bounds')
@@ -241,12 +249,12 @@ def compact_job(part, pdf, page, base):
                     'selector': series['selector'], 'neighbor_px': 0,
                     'limitations': ['Ink-run centers are curve candidates, not bar tips or confirmed series.']})
         return {'schema_version': 1, 'sources': {'s': {'image': absolute(p['image'], base)}},
-                'gate_axes': {'x': {'ticks': p['x_ticks'], 'unit': p['x_unit']}},
-                'panels': {'p': {'source': 's', 'bounds': bounds, 'axis': axis}}, 'items': items}
+                'gate_axes': {'x': axes['x']},
+                'panels': {'p': {'source': 's', 'bounds': bounds, 'axis': axes['y']}}, 'items': items}
     raise ValueError('compact template supports vector_lines/bitmap_points; use existing job for other methods')
 
 
-def configure(root, part_id, method=None):
+def configure(root, part_id, method=None, bounds=None):
     """Select an imported job, or fill an empty part from a bounded template."""
     root, _ = check_package(root)
     decisions = read(root / 'decisions.json')
@@ -257,6 +265,17 @@ def configure(root, part_id, method=None):
         inv = read(root / 'inventory.json')
         c = next(c for c in inv['candidates'] if c['id'] == part['candidate_id'])
         page = next(p for p in inv['pages'] if p['page'] == c['page'])
+        selection = None
+        if method == 'auto':
+            if c['kind'] == 'table':
+                raise ValueError('printed tables use printed-grid and verified printed bindings')
+            selection = route_panel(root, c['page'], bounds)
+            if selection['geometry'] == 'vector_first':
+                method = 'vector_lines'
+            elif selection['geometry'] == 'native_bitmap_first' and len(selection['images']) == 1:
+                method = 'bitmap_points'
+            else:
+                raise ValueError(f"{selection['geometry']}: confirm target series geometry before choosing a method")
         if method == 'vector_lines':
             p = {'frame': page['scan']['frames'][0] if len(page['scan']['frames']) == 1 else None,
                  'x_ticks': [], 'y_ticks': [], 'sample_at': [], 'color_map': {}}
@@ -266,6 +285,16 @@ def configure(root, part_id, method=None):
                  'sample_at': [], 'series': []}
         else:
             raise ValueError('compact templates cover vector_lines/bitmap_points; other methods use existing job')
+        if selection is not None:
+            if method == 'vector_lines':
+                p['frame'] = bounds
+            else:
+                xref = selection['images'][0]['xref']
+                assets = [a['image'] for a in c['assets'] if Path(a['image']).stem.endswith(f'_xref{xref}')]
+                if len(assets) != 1:
+                    raise ValueError('target bitmap has no unique prepared native image')
+                p['image'] = assets[0]
+            part['method_selection'] = selection
         part.update(method=method, parameters=p)
     elif 'job' not in part and not part.get('parameters'):
         raise ValueError('choose a template method or provide an existing job')
@@ -276,7 +305,8 @@ def configure(root, part_id, method=None):
     if not backup.exists():
         backup.write_bytes((root / 'decisions.json').read_bytes())
     write(root / 'decisions.json', decisions)
-    return {'ok': True, 'part': part_id, 'decisions': str(root / 'decisions.json'),
+    return {'ok': True, 'part': part_id, 'method': part['method'],
+            'method_selection': part.get('method_selection'), 'decisions': str(root / 'decisions.json'),
             'next': 'Confirm scope and fill key parameters; build rejects incomplete fields.'}
 
 
@@ -289,7 +319,7 @@ def build(root, require_gate=False):
     inventory = read(root / 'inventory.json')
     candidates = {c['id']: c for c in inventory['candidates']}
     parts, jobs, inputs, pending = [], {}, {}, []
-    ocr_checks = {}
+    ocr_checks, method_selections = {}, {}
     workbook = decisions.get('workbook')
     ids = set()
     for part in decisions['parts']:
@@ -326,6 +356,10 @@ def build(root, require_gate=False):
                     raise ValueError('OCR-applied calibration changed; reconfirm the correction')
             ocr_checks[pid] = {'x': c['x_check_ticks'], 'y': c['y_check_ticks']}
         candidate = candidates.get(part.get('candidate_id'))
+        if selection := part.get('method_selection'):
+            if not candidate or selection != route_panel(root, candidate['page'], selection['bounds_pt']):
+                raise ValueError(f'{pid}: panel method evidence differs from the source PDF')
+            method_selections[pid] = {'method': part['method'], 'evidence': selection}
         if 'job_file' in part:
             if not decisions.get('gate') or part['method'] != 'review_candidates' or 'job' in part or 'trial_job' in part:
                 raise ValueError(f'{pid}: job_file requires a gated candidate import with one job')
@@ -340,6 +374,19 @@ def build(root, require_gate=False):
             raise ValueError(f'{pid}: candidate_id or explicit job required')
         trial = normalize_job(part.get('trial_job', full), root, Path(package['pdf']))
         full = normalize_job(full, root, Path(package['pdf']))
+        if selection:
+            if selection['geometry'] == 'vector_first':
+                if (part['method'] != 'vector_lines' or full.get('frame') != selection['bounds_pt']
+                        or trial.get('frame') != selection['bounds_pt']):
+                    raise ValueError(f'{pid}: reroute the changed vector frame or method')
+            else:
+                xref = selection['images'][0]['xref']
+                assets = {absolute(a['image'], root) for a in candidate['assets']
+                          if Path(a['image']).stem.endswith(f'_xref{xref}')}
+                if (part['method'] != 'bitmap_points' or len(assets) != 1
+                        or any({src['image'] for src in job['sources'].values()} != assets
+                               for job in (full, trial))):
+                    raise ValueError(f'{pid}: reroute the changed bitmap source or method')
         for job in (full, trial): inputs.update(input_hashes(job))
         jobs[pid] = (full, trial)
         parts.append({'id': pid, 'method': part['method'], 'job': f'{pid}_full.json',
@@ -358,7 +405,7 @@ def build(root, require_gate=False):
                 if any(tick not in card['axes'][axis]['check_ticks'] for tick in checks):
                     raise ValueError(f"{part['id']}: frozen {axis} checks omit confirmed OCR evidence")
             for job in jobs[part['id']]:
-                check_job(card, job, part['method'])
+                check_job(card, job, part['method'], bind=True)
                 check_configured_coverage(scope, part['id'], job, part['method'])
         gate = {'file': gate_path, 'sha256': sha(gate_path)}
         inputs[gate_path] = gate['sha256']
@@ -394,6 +441,7 @@ def build(root, require_gate=False):
         if workbook: task['workbook'] = workbook
         write(folder / 'task.json', task)
         write(folder / 'scope.json', {'selected': [p['id'] for p in parts], 'remaining': pending,
+              'method_selections': method_selections,
               'warning': 'Compiled scope is not whole-paper completion; pending candidates remain visible.'})
         write(folder / 'build.json', {'files': {str(p): sha(p) for p in folder.iterdir() if p.is_file()}})
     write(root / 'latest.json', {'task': str(folder / 'task.json'), 'fingerprint': fingerprint})
@@ -454,7 +502,7 @@ def apply_ocr(root, part_id, decision):
         raise ValueError('configured image differs from OCR source')
     p['image'] = c['image']
     if not p.get('bounds') and c['bounds']: p['bounds'] = c['bounds']
-    for key in ('x_ticks', 'y_ticks', 'unit'):
+    for key in ('x_ticks', 'y_ticks', 'unit', 'x_check_ticks', 'y_check_ticks'):
         if c[key]: p[key] = c[key]
     # OCR names do not establish pen style/selector or the requested series scope.
     part['conditions']['ocr_confirmed_series_labels'] = c['series_labels']
@@ -491,6 +539,108 @@ def trial(root, require_gate=False):
     return result
 
 
+def route_panel(root, page_number, bounds):
+    """Choose a first geometry pass from objects inside the supplied panel."""
+    root, package = check_package(root)
+    if not page_number or not bounds:
+        raise ValueError('route requires --page and --bounds in PDF points')
+    with fitz.open(package['request']['pdf']) as document:
+        if not 1 <= page_number <= len(document):
+            raise ValueError('PDF page outside source')
+        page = document[page_number - 1]
+        panel = fitz.Rect(bounds)
+        if not panel.is_valid or panel.is_empty or not (page.rect * page.derotation_matrix).contains(panel):
+            raise ValueError('panel bounds outside PDF page')
+        images = []
+        image_boxes = []
+        for info in page.get_image_info(xrefs=True):
+            image_box = fitz.Rect(info['bbox'])
+            overlap = image_box & panel
+            if not overlap.is_empty:
+                image_boxes.append(image_box)
+                images.append({'xref': info['xref'], 'intersection_pt': list(overlap),
+                               'size_px': [info['width'], info['height']]})
+        # Axis rules can have zero height or width. Only non-degenerate paths
+        # with a footprint in both dimensions count as vector evidence here.
+        vectors = []
+        frames = []
+        axis_aligned = []
+        for drawing in page.get_drawings():
+            rect = drawing['rect']
+            overlap = rect & panel
+            if not overlap.is_empty:
+                item = {'intersection_pt': list(overlap), 'segments': len(drawing['items'])}
+                if (drawing['type'] == 's' and len(drawing['items']) == 1
+                        and drawing['items'][0][0] == 're'
+                        and any(all(abs(a-b) <= .75 for a,b in zip(rect, box))
+                                for box in (panel, *image_boxes))):
+                    frames.append(item)
+                else:
+                    vectors.append(item)
+            elif rect.width == 0 < rect.height and panel.x0 <= rect.x0 <= panel.x1:
+                top, bottom = max(rect.y0, panel.y0), min(rect.y1, panel.y1)
+                if top < bottom:
+                    axis_aligned.append([rect.x0, top, rect.x1, bottom])
+            elif rect.height == 0 < rect.width and panel.y0 <= rect.y0 <= panel.y1:
+                left, right = max(rect.x0, panel.x0), min(rect.x1, panel.x1)
+                if left < right:
+                    axis_aligned.append([left, rect.y0, right, rect.y1])
+        if vectors and images:
+            geometry = 'mixed_check_vector_coverage'
+        elif vectors:
+            geometry = 'vector_first'
+        elif images:
+            geometry = 'native_bitmap_first'
+        elif axis_aligned:
+            geometry = 'axis_aligned_check_identity'
+        else:
+            geometry = 'no_geometry_found'
+        return {'ok': True, 'page': page_number, 'bounds_pt': bounds, 'geometry': geometry,
+                'source_priority': ['verified_published_data', 'panel_geometry'],
+                'images': images, 'vector_paths': vectors, 'matching_frame_paths': frames,
+                'axis_aligned_paths': axis_aligned}
+
+
+def printed_grid(root, page_number, bounds, destination, row_edges=None, column_edges=None):
+    """Propose gate-ready bindings for a selected printed table region."""
+    _, package = check_package(root)
+    if not page_number or not bounds or not destination:
+        raise ValueError('printed-grid requires --page, --bounds and --cell')
+    first_col, first_row = coordinate_from_string(destination)
+    first_col = column_index_from_string(first_col)
+    with fitz.open(package['request']['pdf']) as document:
+        if not 1 <= page_number <= len(document):
+            raise ValueError('PDF page outside source')
+        page = document[page_number - 1]
+        region = fitz.Rect(bounds)
+        if region.is_empty or not (page.rect * page.derotation_matrix).contains(region):
+            raise ValueError('table bounds outside PDF page')
+        if row_edges or column_edges:
+            if not row_edges or not column_edges:
+                raise ValueError('supply both row and column edges')
+            for edges, lo, hi in ((row_edges, region.y0, region.y1),
+                                  (column_edges, region.x0, region.x1)):
+                if len(edges) < 2 or not all(lo <= a < b <= hi for a, b in zip(edges, edges[1:])):
+                    raise ValueError('table edges must be ordered inside bounds')
+            rows = [[(x0,y0,x1,y1) for x0,x1 in zip(column_edges,column_edges[1:])]
+                    for y0,y1 in zip(row_edges,row_edges[1:])]
+        else:
+            tables = page.find_tables(clip=region).tables
+            if len(tables) != 1:
+                raise ValueError('select one ruled table, or provide explicit row and column edges')
+            rows = [row.cells for row in tables[0].rows]
+        bindings, unresolved = {}, []
+        for y, row in enumerate(rows, first_row):
+            for x, box in enumerate(row, first_col):
+                address = f'{get_column_letter(x)}{y}'
+                text = page.get_text('text', clip=box).strip() if box else ''
+                if box and PRINTED_NUMBER.fullmatch(printed_token(text)):
+                    bindings[address] = {'page': page_number, 'bbox': list(box), 'text': text, 'mode': 'text'}
+                else:
+                    unresolved.append({'cell': address, 'text': text, 'bbox': list(box) if box else None})
+    return {'ok': True, 'page': page_number, 'printed': bindings, 'unresolved': unresolved}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('input', help='PDF path, or build/trial/status')
@@ -498,6 +648,10 @@ def main():
     ap.add_argument('--out')
     ap.add_argument('--reuse', action='append', default=[])
     ap.add_argument('--part')
+    ap.add_argument('--page', type=int)
+    ap.add_argument('--cell')
+    ap.add_argument('--row-edges', type=float, nargs='+')
+    ap.add_argument('--column-edges', type=float, nargs='+')
     ap.add_argument('--method')
     ap.add_argument('--image')
     ap.add_argument('--bounds', type=float, nargs=4)
@@ -507,10 +661,15 @@ def main():
     ap.add_argument('--legacy-ungated', action='store_true', help='replay a historical package without the new gates')
     args = ap.parse_args()
     try:
-        if args.input in ('build', 'trial', 'status', 'configure', 'ocr', 'ocr-apply'):
+        if args.input in ('build', 'trial', 'status', 'configure', 'ocr', 'ocr-apply', 'route', 'printed-grid'):
             if not args.package: raise ValueError('package directory required')
-            if args.input == 'configure':
-                reply = configure(args.package, args.part, args.method)
+            if args.input == 'printed-grid':
+                reply = printed_grid(args.package, args.page, args.bounds, args.cell,
+                                     args.row_edges, args.column_edges)
+            elif args.input == 'route':
+                reply = route_panel(args.package, args.page, args.bounds)
+            elif args.input == 'configure':
+                reply = configure(args.package, args.part, args.method, args.bounds)
             elif args.input == 'ocr':
                 reply = ocr_labels(args.package, args.part, args.image, args.bounds, args.engine, args.language)
             elif args.input == 'ocr-apply':

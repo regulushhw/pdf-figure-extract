@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import time
 
+import numpy as np
 from PIL import Image, ImageDraw
 from review_points import axis_fit
 from run_task import REPO, digest, inside, read, sha, write
@@ -84,15 +85,44 @@ def normalize(raw, size, scale):
     return words, lines, warnings
 
 
-def suggestions(words, lines, bounds):
+def tick_strokes(image, bounds, axis, side):
+    """Detect narrow ink protrusions attached to a known plot frame."""
+    gray = np.asarray(image.convert('L'))
+    left, top, right, bottom = map(round, bounds)
+    if axis == 'x':
+        gray = gray.T
+        start, end, edge = left, right, top if side == 'top' else bottom
+    else:
+        start, end, edge = top, bottom, left if side == 'left' else right
+    outward = -1 if side in {'top', 'left'} else 1
+    stop = min(end + 1, gray.shape[0])
+    around = np.arange(max(0, edge-12), min(gray.shape[1], edge+13))
+    if not around.size:
+        return []
+    support = (gray[start:stop, around] < 170).mean(axis=0)
+    if support.max() < .5:
+        return []
+    line = around[np.lexsort((abs(around-edge), -support))[0]]
+    extent = line + outward * np.arange(-1, 5)
+    if min(extent) < 0 or max(extent) >= gray.shape[1]:
+        return []
+    band = gray[start:stop, extent] < 170
+    connected = band[:, 1:5].all(axis=1)
+    edges = np.flatnonzero(np.diff(np.r_[False, connected, False]))
+    return [(start + (lo + hi - 1) / 2, [int(start + lo), int(start + hi - 1)])
+            for lo, hi in edges.reshape(-1, 2) if hi - lo <= 5]
+
+
+def suggestions(words, lines, bounds, image=None):
     result = {'axis_groups': [], 'label_candidates': [],
-              'warning': 'Text centers only: tick positions, values, units and series require confirmation.'}
+              'warning': 'Text boxes and detected strokes are candidates; confirm axis and series against source.'}
     if bounds:
         left, top, right, bottom = bounds
         margin = max(35, min(100, (right-left)*.18))
         groups = []
         for axis, side in (('y', 'left'), ('y', 'right'), ('x', 'bottom'), ('x', 'top')):
             candidates = []
+            strokes = tick_strokes(image, bounds, axis, side) if image is not None else []
             for w in words:
                 if w['numeric_candidate'] is None or not w['coordinate_reliable'] or w['rotation'] != 0: continue
                 a, b, c, d = w['bbox']; x, y = (a+c)/2, (b+d)/2
@@ -101,8 +131,13 @@ def suggestions(words, lines, bounds):
                         (axis == 'x' and left-5 <= x <= right+5 and
                          (bottom-5 <= b <= bottom+margin if side == 'bottom' else top-margin <= d <= top+5)))
                 if near:
-                    candidates.append({'word_id': w['id'], 'position': y if axis == 'y' else x,
-                        'value': w['numeric_candidate'], 'alignment': c if side == 'left' else a if side == 'right' else b})
+                    center = y if axis == 'y' else x
+                    matches = [(position, span) for position, span in strokes if abs(center-position) <= 7]
+                    candidate = {'word_id': w['id'], 'position': center,
+                        'value': w['numeric_candidate'], 'alignment': c if side == 'left' else a if side == 'right' else b}
+                    if len(matches) == 1:
+                        candidate['stroke_position'], candidate['stroke_span_px'] = matches[0]
+                    candidates.append(candidate)
             clusters = []
             for candidate in sorted(candidates, key=lambda c: c['alignment']):
                 if not clusters or abs(candidate['alignment']-clusters[-1][0]['alignment']) > 9:
@@ -111,14 +146,18 @@ def suggestions(words, lines, bounds):
             for cluster in clusters:
                 if len(cluster) < 2: continue
                 ticks = sorted(cluster, key=lambda c: c['position'])
+                fitted = [t for t in ticks if 'stroke_position' in t]
+                basis = 'stroke_position' if len(fitted) >= 2 else 'position'
+                if basis == 'position':
+                    fitted = ticks
                 try:
-                    fit = axis_fit({'coordinate': axis, 'ticks': [[t['position'], t['value']] for t in ticks],
+                    fit = axis_fit({'coordinate': axis, 'ticks': [[t[basis], t['value']] for t in fitted],
                                     'unit': 'unconfirmed', 'max_residual_px': 2})
                     fit_status = 'linear_candidate_unconfirmed'
                 except ValueError as exc:
                     fit, fit_status = None, f'conflict_or_nonlinear: {exc}'
                 groups.append({'axis': axis, 'side': side, 'ticks': ticks,
-                               'fit_status': fit_status, 'fit': fit})
+                               'fit_status': fit_status, 'fit_basis': basis, 'fit': fit})
         result['axis_groups'] = groups
     for line in lines:
         b = line['bbox']
@@ -185,7 +224,7 @@ def recognize(image, out, bounds=None, engine='auto', language=None, rotations=(
             raw['results'].append({**item, 'text_angle': 0, 'lines': parse_tsv(tsv)})
         write(folder / 'raw.json', raw)
     words, lines, warnings = normalize(raw, size, scale)
-    hints = suggestions(words, lines, bounds)
+    hints = suggestions(words, lines, bounds, source)
     marked = source.resize((size[0]*2, size[1]*2))
     draw = ImageDraw.Draw(marked)
     visible_lines = {l['line_id'] for l in hints['label_candidates']}
@@ -196,19 +235,34 @@ def recognize(image, out, bounds=None, engine='auto', language=None, rotations=(
         draw.rectangle(b, outline=color, width=1)
         draw.text((b[0], max(0,b[1]-10)), w['id'], fill=color)
     if bounds: draw.rectangle([v*2 for v in bounds], outline='green', width=2)
+    for group in hints['axis_groups']:
+        axis, side = group['axis'], group['side']
+        edge = bounds[{'left': 0, 'top': 1, 'right': 2, 'bottom': 3}[side]]
+        for tick in group['ticks']:
+            if 'stroke_position' in tick:
+                pos = tick['stroke_position']
+                x, y = (pos*2, edge*2) if axis == 'x' else (edge*2, pos*2)
+                draw.ellipse((x-3, y-3, x+3, y+3), outline='purple', width=2)
     review = folder / 'labels_check.png'; marked.save(review)
     template = {'analysis_fingerprint': fingerprint, 'source_sha256': request['source_sha256'],
         'review_image_sha256': sha(review), 'viewed': False, 'note': '',
         'x': [], 'y': [], 'unit': None, 'series': []}
     for axis in ('x','y'):
-        groups = [g for g in hints['axis_groups'] if g['axis'] == axis and g['fit']]
+        groups = [g for g in hints['axis_groups'] if g['axis'] == axis
+                  and sum('stroke_position' in t for t in g['ticks']) >= 3]
         if len(groups) == 1:
-            template[axis] = [{'word_id': t['word_id']} for t in groups[0]['ticks']]
+            ticks = [t for t in groups[0]['ticks'] if 'stroke_position' in t]
+            if len({t['stroke_position'] for t in ticks}) != len(ticks):
+                continue
+            picks = [{'word_id': t['word_id'], 'position': t['stroke_position'],
+                      'reason': 'Proposed source tick stroke; confirm against source image.'} for t in ticks]
+            template[axis + '_check'] = [picks.pop(len(picks)//2)]
+            template[axis] = picks
     write(folder / 'confirmation_template.json', template)
     (folder / 'labels.tsv').write_text('id\ttext\tx0\ty0\tx1\ty1\n' + '\n'.join(
         w['id']+'\t'+w['text'].replace('\t',' ')+'\t'+'\t'.join(f'{v:.2f}' for v in w['bbox']) for w in words), encoding='utf-8')
     files = {str(p): sha(p) for p in folder.iterdir() if p.is_file() and p.name != 'confirmation_template.json'}
-    write(folder / 'analysis.json', {'version': 1, 'fingerprint': fingerprint, **request,
+    write(folder / 'analysis.json', {'version': 1, 'requires_tick_strokes': True, 'fingerprint': fingerprint, **request,
         'words': words, 'lines': lines, 'suggestions': hints, 'warnings': warnings,
         'review_image': str(review), 'files': files, 'operation_seconds': time.perf_counter()-start})
     return {'ok': True, 'cached': False, 'analysis': str(folder / 'analysis.json'),
@@ -250,6 +304,8 @@ def confirmed(analysis, confirmation):
                 if not w['coordinate_reliable'] or w['id'] in used: raise ValueError('unreliable or duplicate tick box')
                 used.add(w['id'])
                 value = tick.get('value', w['numeric_candidate'])
+                if a.get('requires_tick_strokes') and 'position' not in tick:
+                    raise ValueError('explicit source tick stroke position required')
                 b = w['bbox']; position = tick.get('position', (b[0]+b[2])/2 if axis=='x' else (b[1]+b[3])/2)
                 if (value != w['numeric_candidate'] or 'position' in tick) and not tick.get('reason','').strip():
                     raise ValueError('corrected value/tick position requires reason')

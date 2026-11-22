@@ -13,7 +13,7 @@ import fitz
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from run_task import Runner, readonly_tools, read, write, sha, TOOLS
+from run_task import Runner, readonly_tools, read, write, sha, TOOLS, add_bound_changes
 
 
 class RunnerTests(unittest.TestCase):
@@ -179,6 +179,18 @@ class RunnerTests(unittest.TestCase):
         data=read(Path(r['folder'])/'data.json')
         self.assertEqual(len(data['p']['records']),2)
         self.assertTrue(all(r['value']>0 for r in data['p']['records']))
+
+    def test_source_bound_changes_group_cells_and_reject_overrides(self):
+        readings={'Data!B6':{'value':1.234,'decimals':2,'tolerance':.005},
+                  'Data!C6':{'value':None,'tolerance':0}}
+        plan={'changes':[{'sheet':'Data','range':'A6','values':[['series']]}]}
+        add_bound_changes(plan,readings)
+        self.assertEqual(plan['changes'][1],{'sheet':'Data','range':'B6:C6','values':[[1.23,'—']]})
+        add_bound_changes(plan,readings)
+        self.assertEqual(len(plan['changes']),2)
+        plan['changes'].append({'sheet':'Data','range':'B6','values':[[99]]})
+        with self.assertRaisesRegex(ValueError,'Data!B6'):
+            add_bound_changes(plan,readings)
 
     def test_workbook_uses_current_python_when_override_missing(self):
         plan={'paper':1,'target':str(self.root/'book.xlsx'),'backup':str(self.root/'backup.xlsx')}

@@ -39,3 +39,18 @@
 同一准备目录内，按 PDF 与原文图号累计自动失败。固定读数程序出错会登记失败。候选在图上核对失败时，用 `run_task.py TASK reject --part ID --decision REJECTION.json`，决定文件给出 `stage`（`trial` 或 `run`）、当前 `fingerprint`、检查图路径到摘要的 `images` 映射和具体 `note`。同一次候选重复拒绝只算一次。连续两次失败后第三次自动取数被拦截。
 
 转人工时保留同一图卡与取样，使用 `manual_points`，通过与位图取点相同的配置模板或已有复核任务生成待读位置。程序只生成空候选和定位叠图，按现有拖点或批量补点入口录入源像素。空候选仍属于待处理。
+对于已有工作簿，核对从表中间开始的数据区时，可用 `row_label_column` 指明系列标签列（A 列为 1），用 `column_header_row` 指明横轴标签所在行。原有其他行列保留，指定数据区的行列标签仍逐项核验。
+
+## 原表数字的批量绑定
+
+覆盖报告与审阅稿逐格绑定会同时保留 PDF 校验值、页码、原文区域与数字字样。人工抄录的扫描文字还会保留复核理由。
+
+一张表既有原文明确数字又需读图时，使用 `read`，分别填写 `printed` 和 `points`。两组绑定必须互不重叠并覆盖整张冻结表。正文在其他页时，通过 `linked_text_pages` 逐页记录 `page` 和该页为何适用的 `reason`。原文为百分数、表格为 0 至 1 的概率时，单元格可显式填写 `conversion: "percent_to_fraction"`，证据保留原值与换算类型。
+
+准备任务后，用目标原表范围生成可直接核对的 `printed` 候选。明确目标 Excel 左上数据单元格：
+
+```text
+python tools/prepare_task.py printed-grid <package> --page 8 --bounds 196 148 760 211 --cell B6
+```
+
+有且仅有一张可识别的有线框表时，程序使用它的单元格边界。无框线表可同时传入 `--row-edges` 和 `--column-edges`，坐标单位为 PDF 点。每个候选保留印刷记号、页码与范围。空位、表头文字及多个数字组成的复杂内容进入 `unresolved`。核对源表行列身份和目标数据范围后，将 `printed` 放入相应的 `transcribe` 表配置。关卡会逐格重读 PDF 并与工作簿数值对账。

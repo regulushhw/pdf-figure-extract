@@ -5,6 +5,22 @@ import openpyxl
 from openpyxl.utils.cell import range_boundaries
 W=Path(os.environ.get('SRDP_TASK_DIR') or Path(__file__).resolve().parent).resolve()
 
+def explicit_formats(plan,book,errors):
+ formats={}
+ for spec in plan.get('number_formats',[]):
+  sheet=spec['sheet'];decimals=spec['decimals']
+  if sheet not in book.sheetnames or type(decimals) is not int or not 0<=decimals<=15:
+   errors.append(['invalid_number_format',spec]);continue
+  mask='0' if not decimals else '0.'+'0'*decimals
+  left,top,right,bottom=range_boundaries(spec['range'])
+  for row in range(top,bottom+1):
+   for col in range(left,right+1):
+    key=(sheet,row,col)
+    if key in formats and formats[key]!=mask:
+     errors.append(['conflicting_number_format',sheet,book[sheet].cell(row,col).coordinate])
+    formats[key]=mask
+ return formats
+
 def plan_errors(plan,book):
  errors=[]
  for spec in plan.get('merges',[]):
@@ -40,11 +56,16 @@ def plan_errors(plan,book):
     if key in formats and formats[key]!=expected:
      errors.append(['conflicting_number_format',sheet,openpyxl.utils.get_column_letter(cc)+str(rr),formats[key],expected])
     formats[key]=expected
+ explicit_formats(plan,book,errors)
  return errors
 
 def content_errors(plan,book):
  errors=plan_errors(plan,book)
  if errors:return errors
+ formats=explicit_formats(plan,book,errors)
+ for (name,row,col),expected in formats.items():
+  cell=book[name].cell(row,col)
+  if cell.number_format!=expected:errors.append(['number_format',name,cell.coordinate,expected,cell.number_format])
  for change in plan['changes']:
   c0,r0,_,_=range_boundaries(change['range']);sheet=book[change['sheet']]
   for rr,row in enumerate(change['values'],r0):
@@ -57,7 +78,8 @@ def content_errors(plan,book):
   c0,r0,c1,r1=range_boundaries(spec['range'])
   for row in sheet.iter_rows(min_row=r0,max_row=r1,min_col=c0,max_col=c1):
    for cell in row:
-    if cell.number_format!=expected:errors.append(['number_format',sheet.title,cell.coordinate,expected,cell.number_format])
+    if (sheet.title,cell.row,cell.column) not in formats and cell.number_format!=expected:
+     errors.append(['number_format',sheet.title,cell.coordinate,expected,cell.number_format])
  for spec in plan.get('column_widths',[]):
   sheet=book[spec['sheet']]
   if 'width' not in spec:continue
