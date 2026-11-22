@@ -81,6 +81,8 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(bitmap['geometry'], 'native_bitmap_first')
         self.assertEqual(len(bitmap['matching_frame_paths']), 1)
         self.assertEqual(len(bitmap['bitmap_backdrop_paths']), 1)
+        self.assertLess(bitmap['bitmap_backdrop_paths'][0]['paint_order'],
+                        min(bitmap['images'][0]['paint_order_candidates']))
         self.assertEqual(bitmap['axis_aligned_paths'], [[20, 90, 150, 90]])
         self.assertEqual(route_panel(self.out, 1, [175, 40, 380, 160])['geometry'],
                          'vector_first')
@@ -110,6 +112,8 @@ class PrepareTests(unittest.TestCase):
         report = route_panel(self.out, 1, [30, 30, 150, 150])
         self.assertEqual(report['geometry'], 'mixed_check_vector_coverage')
         self.assertEqual(report['bitmap_backdrop_paths'], [])
+        self.assertGreater(report['vector_paths'][0]['paint_order'],
+                           max(report['images'][0]['paint_order_candidates']))
 
     def test_printed_grid_preserves_unresolved_cell_and_source_tokens(self):
         path = self.root / 'table.pdf'
