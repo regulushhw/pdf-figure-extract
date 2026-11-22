@@ -170,7 +170,8 @@ def cell_bindings(table, table_id, field='points'):
         return {}
     if 'printed' in table and 'points' in table:
         printed, points = set(table['printed']), set(table['points'])
-        if not printed or not points or printed & points or printed | points != expected:
+        if (not printed or not points or printed | points != expected or
+                (printed & points and table.get('compare_printed_geometry') is not True)):
             raise ValueError(f'{table_id}: printed and read bindings must partition all expected cells')
         return bindings
     if not expected or set(bindings) != expected:
@@ -666,6 +667,7 @@ def coverage_report(scope, results, printed):
     for table_id, field in tables:
         table = scope['tables'][table_id]
         bindings = cell_bindings(table, table_id, field)
+        geometry_bindings = bindings if field == 'points' else {}
         if field == 'points' and 'printed' in table:
             bindings = {**bindings, **cell_bindings(table, table_id, 'printed')}
         for address, ref in bindings.items():
@@ -678,6 +680,25 @@ def coverage_report(scope, results, printed):
                 details['value'] = printed[key]['value']
                 if printed[key].get('source_basis'):
                     details['source_basis'] = printed[key]['source_basis']
+                geometry = geometry_bindings.get(address)
+                if geometry is not None:
+                    comparison = {'reference': geometry, 'status': 'not_extracted'}
+                    index = indexes.get(geometry['part'])
+                    if index is not None:
+                        selector = {k: v for k, v in geometry.items() if k in ('id', 'series', 'x')}
+                        matches = matching_readings(index, selector)
+                        comparison['status'] = 'unmatched' if not matches else 'ambiguous'
+                        if len(matches) == 1:
+                            row = index[0][matches[0]]
+                            role = geometry.get('role', 'value')
+                            reading = row.get('roles', {'value': row}).get(role, {})
+                            value = reading.get('value')
+                            if value is None:
+                                comparison['status'] = 'unresolved'
+                            else:
+                                comparison.update(status=reading.get('status') or 'numeric_candidate', value=value)
+                                details['printed_minus_geometry'] = details['value'] - value
+                    details['geometry_comparison'] = comparison
             elif ref.get('part') not in indexes:
                 status = 'not_extracted'
             else:
@@ -867,7 +888,12 @@ def bound_readings(scope, results, missing):
                         missing[key] = reviewed_gap
                     reading = row
                 measurement = reading.get('measurement')
-                values[key] = {'value': reading['value'], **prepared_precision(table, reading, key)}
+                comparison = address in table.get('printed', {})
+                if comparison and reading['value'] is None:
+                    raise ValueError(f'{key}: source comparison requires a resolved numeric geometry value')
+                values[key] = {'value': reading['value'], **({} if comparison else prepared_precision(table, reading, key))}
+                if comparison:
+                    values[key]['source_location'] = {k: reading[k] for k in ('pixel', 'pdf_xy') if k in reading}
                 if reading.get('source_basis') is not None:
                     values[key]['source_basis'] = reading['source_basis']
                 if reading.get('shared_measurement') is not None:
@@ -887,6 +913,17 @@ def bound_readings(scope, results, missing):
     return values
 
 
+def prefer_printed(point_values, printed):
+    readings = dict(point_values)
+    for key, value in printed.items():
+        if key in readings:
+            geometry = readings[key]
+            value = {**value, 'geometry_comparison': geometry,
+                     'printed_minus_geometry': value['value'] - geometry['value']}
+        readings[key] = value
+    return readings
+
+
 def check_delivery(scope, path, evidence, results=None, printed=None):
     missing = dict(evidence.get('missing', {}))
     point_values = None if results is None else bound_readings(scope, results, missing)
@@ -900,7 +937,7 @@ def check_delivery(scope, path, evidence, results=None, printed=None):
             if not (0 <= left < right <= image.width and 0 <= top < bottom <= image.height):
                 raise ValueError(f'{key}: missing-value evidence outside source')
     if printed is not None:
-        point_values = {**(point_values or {}), **printed}
+        point_values = prefer_printed(point_values or {}, printed)
     inspect_workbook(path, scope['tables'], final=True, missing=missing, point_values=point_values)
 
 
