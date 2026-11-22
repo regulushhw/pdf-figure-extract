@@ -365,6 +365,24 @@ class ExtractionGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'independent printed label'):
             check_job(card, job, 'manual_points')
 
+    def test_boxplot_category_allows_offset_but_rejects_adjacent_slot(self):
+        x = {'kind': 'category', 'ticks': [[100, 'spring'], [200, 'summer']],
+             'check_ticks': [[101, 'spring'], [200, 'summer']]}
+        y = {'kind': 'linear', 'unit': '%', 'ticks': [[0, 0], [20, 20]],
+             'check_ticks': [[10, 10]]}
+        card = {'axes': {'x': x, 'y': y}}
+        box = {'id': 'summer-flow', 'identity': {'x': 'summer'}, 'x': 175,
+               'roi': [160, 5, 190, 40]}
+        job = {'gate_axes': {'x': x}, 'panels': {'p': {'axis': y}}, 'boxplots': [box]}
+        check_job(card, job, 'bitmap_bar_ranges')
+        box['roi'][0] = 145
+        with self.assertRaisesRegex(ValueError, 'crosses its category boundary'):
+            check_job(card, job, 'bitmap_bar_ranges')
+        box['roi'][0] = 160
+        box['identity']['x'] = 'autumn'
+        with self.assertRaisesRegex(ValueError, 'unknown boxplot category'):
+            check_job(card, job, 'bitmap_bar_ranges')
+
     def test_manual_trial_keeps_frozen_positions_without_an_extractor(self):
         path = self.root / 'source.png'
         Image.new('RGB', (25, 25), 'white').save(path)

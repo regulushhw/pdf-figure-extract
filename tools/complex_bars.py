@@ -311,9 +311,47 @@ def body_baseline_at(panel, x):
     return y0 + (y1-y0)*(x-left)/(right-left)
 
 
+def analyze_boxplot(mask, spec):
+    left, top, right, bottom = roi(spec['roi'], mask.shape)
+    x = spec['x']
+    half = spec['box_half_width']
+    if not left <= x-half < x < x+half <= right or half < 5:
+        raise ValueError('box center and half-width must fit inside the slot')
+    band = mask[top:bottom+1, x-half:x+half+1]
+    width = band.shape[1]
+    horizontal = band.sum(axis=1)
+    edges = blocks(np.flatnonzero(horizontal >= .85 * width))
+    roles = {role: [] for role in ('q3', 'median', 'q1', 'upper_whisker', 'lower_whisker')}
+    evidence = {'horizontal_box_bands': [[top+a, top+b] for a,b in edges],
+                'role_y_bounds_px': {}}
+    if len(edges) != 3:
+        return roles, ['box_horizontal_bands_ambiguous'], evidence
+    first, last = edges[0][0], edges[-1][1]
+    if min(band[first:last+1, :2].any(axis=1).mean(),
+           band[first:last+1, -2:].any(axis=1).mean()) < .8:
+        return roles, ['box_side_connectivity_insufficient'], evidence
+    for role, (a,b) in zip(('q3', 'median', 'q1'), edges):
+        roles[role].append([x, top+(a+b)/2])
+        evidence['role_y_bounds_px'][role] = [top+a, top+b]
+    center = band[:, half-1:half+2].any(axis=1)
+    flags = []
+    for role, rows, anchor in (('upper_whisker', range(first), first),
+                               ('lower_whisker', range(last+1, len(band)), last)):
+        caps = blocks([y for y in rows if 5 <= horizontal[y] <= .75*width and center[y]])
+        connected = [(a,b) for a,b in caps if center[min(a,anchor):max(b,anchor)+1].mean() >= .9]
+        roles[role] = [[x, top+(a+b)/2] for a,b in connected]
+        if len(connected) == 1:
+            a,b = connected[0]
+            evidence['role_y_bounds_px'][role] = [top+a, top+b]
+        else:
+            flags.append(f'{role}_ambiguous')
+    return roles, flags, evidence
+
+
 def run(path,out):
     job,review,images,overlays,out=inputs(path,out)
-    if not job.get('bars') and not job.get('capped_ranges'):raise ValueError('explicit bars or capped_ranges required')
+    if not any(job.get(key) for key in ('bars', 'capped_ranges', 'boxplots')):
+        raise ValueError('explicit bars, capped_ranges or boxplots required')
     records=[];mask_cache={};body_cache={};layout_cache={};layouts={}
     bar_lookup={b['id']:b for b in job.get('bars',[])}
     for layout in job.get('bar_groups',[]):
@@ -327,7 +365,8 @@ def run(path,out):
             selectors.add(json.dumps([member.get('selector',job.get('selector',{'mode':'gray','range':[0,180]})),member.get('exclude_boxes',[])],sort_keys=True))
             layouts[ident]=layout
         if len(selectors)!=1:raise ValueError('grouped bars must use the same selector/exclusions')
-    for kind,specs in (('bar',job.get('bars',[])),('capped',job.get('capped_ranges',[]))):
+    for kind,specs in (('bar',job.get('bars',[])),('capped',job.get('capped_ranges',[])),
+                       ('boxplot',job.get('boxplots',[]))):
         for spec in specs:
             panel=review['panels'][spec['panel']];rgb=images[panel['source']]
             selector=spec.get('selector',job.get('selector',{'mode':'gray','range':[0,180]}))
@@ -345,7 +384,7 @@ def run(path,out):
                 if body_key not in body_cache:body_cache[body_key]=fill_bar_interiors(mask,width)
                 body_mask=body_cache[body_key]
             zero=spec.get('zero_y',panel.get('zero_y'))
-            if zero is None:raise ValueError('explicit confirmed zero_y required')
+            if zero is None and kind!='boxplot':raise ValueError('explicit confirmed zero_y required')
             slot=None;original_spec=spec
             if kind=='bar' and spec['id'] in layouts:
                 layout=layouts[spec['id']];layout_key=(key,json.dumps(layout,sort_keys=True),width)
@@ -357,7 +396,12 @@ def run(path,out):
                 if spec.get('range_expected',True):
                     raise ValueError('body_baseline is only for bar positions without range stems')
                 zero=body_baseline_at(panel,spec['x'])
-            roles,flags,geo=analyze_bar(mask,spec,zero,body_mask) if kind=='bar' else analyze_capped(mask,spec,zero)
+            if kind=='boxplot':
+                roles,flags,geo=analyze_boxplot(mask,spec)
+            elif kind=='bar':
+                roles,flags,geo=analyze_bar(mask,spec,zero,body_mask)
+            else:
+                roles,flags,geo=analyze_capped(mask,spec,zero)
             if kind=='bar' and 'body_baseline' in panel:
                 geo['body_baseline_evidence']={'source_anchors':panel['body_baseline'],'contact_y':zero}
             if body_mask is not None:geo['body_support_preprocessing']={'fill_outline_max_width':width,'range_ink_unchanged':True}
