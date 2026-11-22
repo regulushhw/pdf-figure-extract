@@ -1142,7 +1142,7 @@ def edit_points(result, request, observation):
                     'review':{'note':note,'previous':previous,'evidence_scope':'visual self-check; not independent validation'}}
                 missing_kind = op.get('missing_kind')
                 if missing_kind is not None:
-                    if missing_kind not in ('source_unreadable','source_uncovered'):
+                    if missing_kind not in ('source_unreadable','source_uncovered','source_not_sampled'):
                         raise ValueError('unknown source gap criterion')
                     view = shown[ident,role]['bounds']
                     roi = record['roi']

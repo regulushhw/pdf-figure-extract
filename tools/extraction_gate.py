@@ -756,6 +756,7 @@ def compare_current_cells(report, path):
         'printed_source': 'verified_replacement',
         'numeric_candidate': 'candidate_needs_review',
         'source_uncovered': 'confirmed_outside_coverage',
+        'source_not_sampled': 'confirmed_not_sampled',
         'source_unreadable': 'confirmed_unreadable',
         'not_extracted': 'not_yet_extracted',
     }
@@ -788,7 +789,7 @@ def compare_current_cells(report, path):
                         change = 'dash_has_verified_replacement'
                     elif old == '—' and status == 'numeric_candidate':
                         change = 'dash_has_candidate'
-                    elif status in ('source_uncovered', 'source_unreadable') and type(old) in (int, float):
+                    elif status in ('source_uncovered', 'source_unreadable', 'source_not_sampled') and type(old) in (int, float):
                         change = 'existing_number_has_source_gap'
                     elif (status in ('reviewed_numeric', 'printed_source') and type(old) in (int, float)
                           and not math.isclose(old, entry.get('output_value', entry['value']), rel_tol=0,
@@ -948,7 +949,8 @@ def check_delivery(scope, path, evidence, results=None, printed=None):
     point_values = None if results is None else bound_readings(scope, results, missing)
     for key, item in missing.items():
         required_text(item.get('reason'), f'{key}: missing-value reason')
-        if item['kind'] not in ('source_unreadable', 'source_uncovered') or sha(item['image']) != item['sha256']:
+        if (item['kind'] not in ('source_unreadable', 'source_uncovered', 'source_not_sampled')
+                or sha(item['image']) != item['sha256']):
             raise ValueError(f'{key}: missing value requires unchanged source image and source criterion')
         from PIL import Image
         with Image.open(item['image']) as image:

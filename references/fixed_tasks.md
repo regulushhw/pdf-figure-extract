@@ -57,6 +57,8 @@ python tools/drag_points.py task.json copy-series --part panel_a --from "50 mg/L
 
 边缘取样列仍属于原定表格。查看当前局部图后，已确认的缺口可用 `delete` 操作附 `missing_kind: "source_uncovered"` 或 `"source_unreadable"`，并在操作备注写具体判据。草稿按冻结的单元格绑定写入「—」，在 `bound_missing_evidence.json` 保留原图摘要和本次看到的 ROI。早期人工填写的缺值证据仍可用；两份证据冲突时报错。
 
+位图复核还可用 `missing_kind: "source_not_sampled"`，用于原图的离散系列没有在该列取样。备注写明可见的取样标记和缺位依据。连续曲线超出其终点使用 `source_uncovered`，需要取数但尚未执行时覆盖报告仍为 `not_extracted`。
+
 看图后填写一个决定文件，批量修改：
 
 ```json
