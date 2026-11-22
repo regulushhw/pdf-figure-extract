@@ -86,7 +86,7 @@ class OcrTests(unittest.TestCase):
         draw.rectangle((20,20,200,120),outline='black')
         words=[]
         for i,x in enumerate((40,100,160)):
-            draw.line((x,120,x,126),fill='black')
+            draw.line((x,120,x,114 if i == 1 else 126),fill='black')
             shift=(5,-4,5)[i]
             words.append({'id':f'w{i}','numeric_candidate':i*10,
                           'coordinate_reliable':True,'rotation':0,
