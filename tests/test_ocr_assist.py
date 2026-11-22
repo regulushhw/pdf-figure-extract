@@ -97,6 +97,22 @@ class OcrTests(unittest.TestCase):
         self.assertEqual([t['stroke_position'] for t in group['ticks']],[40,100,160])
         self.assertEqual([t['position'] for t in group['ticks']],[45,96,165])
 
+    def test_percent_aliases_require_matching_strokes_and_a_strict_percent(self):
+        image = Image.new('RGB', (200, 200), 'white')
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((60, 20, 190, 180), outline='black')
+        words = []
+        for i, (y, text, value) in enumerate(((40, '200/0', None), (80, '00/0', None),
+                                                (120, '-20%', -20), (160, '—40%', None))):
+            draw.line((54, y, 60, y), fill='black')
+            words.append({'id': f'w{i}', 'text': text, 'numeric_candidate': value,
+                          'coordinate_reliable': True, 'rotation': 0, 'bbox': [12, y-5, 48, y+5]})
+        groups = suggestions(words, [], [60, 20, 190, 180], image)['axis_groups']
+        self.assertEqual([tick['value'] for tick in groups[0]['ticks']], [20, 0, -20, -40])
+        self.assertEqual(groups[0]['ticks'][0]['ocr_text_needs_confirmation'], '200/0')
+        words[2]['text'] = '-20'
+        self.assertEqual(suggestions(words, [], [60, 20, 190, 180], image)['axis_groups'], [])
+
     def test_valid_confirmation_and_unit_correction_reason(self):
         a,d=self.fixture()
         d['unit']={'line_id':'unit','text':'Ml/d','reason':'Slash checked on source image.'}

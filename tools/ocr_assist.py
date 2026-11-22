@@ -117,6 +117,8 @@ def suggestions(words, lines, bounds, image=None):
     result = {'axis_groups': [], 'label_candidates': [],
               'warning': 'Text boxes and detected strokes are candidates; confirm axis and series against source.'}
     if bounds:
+        strict_percent_ids = {w['id'] for w in words if w['numeric_candidate'] is not None
+                              and w.get('text', '').strip().endswith('%')}
         left, top, right, bottom = bounds
         margin = max(35, min(100, (right-left)*.18))
         groups = []
@@ -124,7 +126,7 @@ def suggestions(words, lines, bounds, image=None):
             candidates = []
             strokes = tick_strokes(image, bounds, axis, side) if image is not None else []
             for w in words:
-                if w['numeric_candidate'] is None or not w['coordinate_reliable'] or w['rotation'] != 0: continue
+                if not w['coordinate_reliable'] or w['rotation'] != 0: continue
                 a, b, c, d = w['bbox']; x, y = (a+c)/2, (b+d)/2
                 near = ((axis == 'y' and top-5 <= y <= bottom+5 and
                          (left-margin <= c <= left+5 if side == 'left' else right-5 <= a <= right+margin)) or
@@ -133,8 +135,21 @@ def suggestions(words, lines, bounds, image=None):
                 if near:
                     center = y if axis == 'y' else x
                     matches = [(position, span) for position, span in strokes if abs(center-position) <= 7]
+                    value = w['numeric_candidate']
+                    alternative = None
+                    if value is None and len(matches) == 1:
+                        token = w.get('text', '').strip().replace('—', '−')
+                        if re.fullmatch(r'[+\-−–]?\d+(?:\.\d+)?0/0', token):
+                            token = token[:-3] + '%'
+                        if token.endswith('%'):
+                            alternative = numeric(token)
+                            value = alternative
+                    if value is None:
+                        continue
                     candidate = {'word_id': w['id'], 'position': center,
-                        'value': w['numeric_candidate'], 'alignment': c if side == 'left' else a if side == 'right' else b}
+                        'value': value, 'alignment': c if side == 'left' else a if side == 'right' else b}
+                    if alternative is not None:
+                        candidate['ocr_text_needs_confirmation'] = w['text']
                     if len(matches) == 1:
                         candidate['stroke_position'], candidate['stroke_span_px'] = matches[0]
                     candidates.append(candidate)
@@ -144,6 +159,8 @@ def suggestions(words, lines, bounds, image=None):
                     clusters.append([])
                 clusters[-1].append(candidate)
             for cluster in clusters:
+                if not any(t['word_id'] in strict_percent_ids and 'stroke_position' in t for t in cluster):
+                    cluster = [t for t in cluster if 'ocr_text_needs_confirmation' not in t]
                 if len(cluster) < 2: continue
                 ticks = sorted(cluster, key=lambda c: c['position'])
                 fitted = [t for t in ticks if 'stroke_position' in t]
@@ -256,6 +273,10 @@ def recognize(image, out, bounds=None, engine='auto', language=None, rotations=(
                 continue
             picks = [{'word_id': t['word_id'], 'position': t['stroke_position'],
                       'reason': 'Proposed source tick stroke; confirm against source image.'} for t in ticks]
+            for pick, tick in zip(picks, ticks):
+                if 'ocr_text_needs_confirmation' in tick:
+                    pick['value'] = tick['value']
+                    pick['reason'] = f"OCR read {tick['ocr_text_needs_confirmation']!r}; confirm printed value and stroke."
             template[axis + '_check'] = [picks.pop(len(picks)//2)]
             template[axis] = picks
     write(folder / 'confirmation_template.json', template)
