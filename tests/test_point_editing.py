@@ -112,12 +112,16 @@ class PointTests(unittest.TestCase):
         self.assertFalse(self.attest('accept')['ok'])
 
     def test_reviewed_source_gap_records_original_source_and_visible_bounds(self):
-        view=self.inspect(('p2',))
-        reply=self.edit(view,[{'op':'delete','id':'p2','missing_kind':'source_uncovered'}])
+        view=self.inspect(('p1','p2'))
+        reply=self.edit(view,[{'op':'delete','id':'p1','missing_kind':'source_not_sampled'},
+                              {'op':'delete','id':'p2','missing_kind':'source_uncovered'}])
         self.assertTrue(reply['ok'],reply)
         basis=self.result()['items'][2]['roles']['value']['review']['missing_evidence']
         self.assertEqual(basis['sha256'],sha(self.root/'source.png'))
-        self.assertEqual(basis['bbox'],view['views'][0]['bounds'])
+        self.assertEqual(basis['bbox'],next(v['bounds'] for v in view['views'] if v['id']=='p2'))
+        unsampled=self.result()['items'][1]['roles']['value']['review']['missing_evidence']
+        self.assertEqual(unsampled['kind'],'source_not_sampled')
+        self.assertEqual(unsampled['sha256'],basis['sha256'])
 
     def test_undo_restores_before_batch_and_preview(self):
         v=self.inspect();r=self.edit(v,[{'op':'move','id':'p0','pixel':[22,45]}]);self.assertTrue(r['ok'],r)
