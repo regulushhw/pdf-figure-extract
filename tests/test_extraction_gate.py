@@ -6,7 +6,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 import fitz
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as WorkbookImage
 from PIL import Image
 
@@ -82,6 +82,17 @@ class ExtractionGateTests(unittest.TestCase):
         compare_current_cells(report, self.old)
         self.assertEqual(report['current_workbook']['changes'], {'existing_number_has_source_gap': 1})
         self.assertEqual(report['cells']['Fig6-1!B2']['current_value'], 1)
+        book = load_workbook(self.old)
+        for name in book.sheetnames:
+            book[name]['B2'] = book[name]['C2'] = '—'
+        dashes = self.root / 'old-dashes.xlsx'
+        book.save(dashes)
+        book.close()
+        report = coverage_report(self.scope, {'first': result}, {})
+        compare_current_cells(report, dashes)
+        self.assertEqual(report['current_workbook']['dash_dispositions'], {
+            'confirmed_outside_coverage': 1, 'candidate_needs_review': 1, 'not_yet_extracted': 2})
+        self.assertEqual(report['cells']['Fig6-1!C2']['dash_disposition'], 'candidate_needs_review')
 
     def test_figure_preview_includes_print_area_but_retains_other_detail_ranges(self):
         image = BytesIO()
