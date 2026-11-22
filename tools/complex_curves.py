@@ -253,7 +253,8 @@ def _track(mask,spec):
     smooth=spec.get('slope_weight',0 if pattern=='dotted' else 1.5);max_step=spec.get('max_step_px',10)
     margin=spec.get('ambiguity_cost',1.0)
     lo,hi=style.get('width_range',[1,8])
-    if not(0<=max_gap<=30 and type(max_gap) is int and 2<=beam<=128 and
+    gap_limit = min(120, max(30, 3*hi)) if broken else 30
+    if not(0<=max_gap<=gap_limit and type(max_gap) is int and 2<=beam<=128 and
            0<=tol<=10 and 0<=smooth<=20 and 0<max_step<=100 and 0<lo<=hi and margin>=0):
         raise ValueError('invalid bounded tracking parameters')
     if not auto:

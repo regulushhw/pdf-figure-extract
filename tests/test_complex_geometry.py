@@ -67,6 +67,17 @@ class GeometryTests(unittest.TestCase):
         result = select_pixels(rgb, {'mode': 'dominant_channel', 'channel': 'blue', 'margin': 81})
         self.assertEqual(result.tolist(), [[True, True, False, False, False]])
 
+    def test_native_resolution_dotted_line_supports_measured_wider_gap(self):
+        mask = np.zeros((100, 120), dtype=bool)
+        mask[35:49, 10:37] = mask[35:49, 72:100] = True
+        spec = {'roi': [5, 25, 110, 60], 'anchors': [[20, 41], [90, 41]], 'sample_x': [50],
+                'interpolate_dash_gaps': True,
+                'style': {'pattern': 'dotted', 'width_range': [10, 16], 'max_gap_px': 40}}
+        result = track(mask, spec)['samples'][0]
+        self.assertEqual(result['selected'], [50, 41.5])
+        self.assertEqual(result['interpolation_bracket'], [[36, 41.5], [72, 41.5]])
+        self.assertIn('local_dash_interpolation_review', result['flags'])
+
     def test_positive_bar_tip_separate_from_stem_endpoints(self):
         mask,_=self.mask();roles,flags,evidence=analyze_bar(mask,self.spec(),90)
         self.assertEqual(roles['bar_tip'],[[45,60.]])
