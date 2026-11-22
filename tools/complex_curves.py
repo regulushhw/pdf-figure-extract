@@ -80,6 +80,20 @@ def horizontal_review_candidates(mask, bounds, axis):
 def track(mask,spec):
     result = track_mask(mask, spec)
     span = spec.get('dash_fragment_span_px')
+    reference = spec.get('dash_fragment_reference_px')
+    if reference is not None:
+        if span is not None:
+            raise ValueError('choose a measured dash reference or an explicit fragment span')
+        if isinstance(reference, list) and reference and isinstance(reference[0], list):
+            widths = [measure_dash_span(mask, spec, point) for point in reference]
+            span = max(widths)
+            if span > 2 * min(widths):
+                raise ValueError('dash reference spans disagree; check isolated ink and series identity')
+            result['dash_fragment_reference'] = {
+                'points_px': reference, 'measured_spans_px': widths, 'span_px': span}
+        else:
+            span = measure_dash_span(mask, spec, reference)
+            result['dash_fragment_reference'] = {'point_px': reference, 'span_px': span}
     if span is None:
         return result
     if (type(span) is not int or span < 2
@@ -137,6 +151,26 @@ def track(mask,spec):
     return result
 
 
+def measure_dash_span(mask, spec, reference):
+    import cv2
+
+    left, top, right, bottom = roi(spec['roi'], mask.shape)
+    if (not isinstance(reference, list) or len(reference) != 2
+            or any(type(coordinate) is not int for coordinate in reference)):
+        raise ValueError('dash fragment reference requires integer source pixel coordinates')
+    x, y = reference
+    if not (left < x < right and top < y < bottom and mask[y, x]):
+        raise ValueError('dash fragment reference must be on ink inside the ROI')
+    region = mask[top:bottom+1, left:right+1]
+    _, labels, stats, _ = cv2.connectedComponentsWithStats(region.astype('uint8'), connectivity=8)
+    label = labels[y-top, x-left]
+    offset_x, offset_y, width, height, _ = stats[label]
+    if (offset_x == 0 or offset_y == 0 or offset_x+width == region.shape[1]
+            or offset_y+height == region.shape[0]):
+        raise ValueError('dash fragment reference component is clipped by the ROI')
+    return int(width)
+
+
 def filter_component_mask(mask, spec):
     min_span = spec.get('min_component_span_px', 1)
     max_span = spec.get('max_component_span_px')
@@ -166,6 +200,33 @@ def track_mask(mask,spec,component_mask=None):
         horizontal_strokes = find_horizontal_strokes(mask,roi(spec['roi'],mask.shape),spec['axis_rule_rows'])
     mask = filter_component_mask(mask,spec) if component_mask is None else component_mask
     result = _track(mask, spec)
+    style = spec.get('style', {})
+    if (spec.get('retry_measured_dash_gap') is True and result['status'] == 'disconnected'
+            and style.get('pattern') in ('dashed', 'dotted')
+            and spec.get('max_component_span_px') is not None and spec.get('anchors')):
+        top, bottom = spec['roi'][1::2]
+        anchors = np.asarray(spec['anchors'])
+        left, right = int(anchors[0, 0]), int(anchors[-1, 0])
+        columns = np.arange(left, right+1)
+        center = np.interp(columns, anchors[:, 0], anchors[:, 1])
+        width_hi = style.get('width_range', [1, 8])[1]
+        # Estimate gaps near the anchored series so distant ink cannot fill them.
+        distance = np.abs(np.arange(top, bottom+1)[:, None] - center)
+        corridor = distance <= 2 * width_hi
+        ink = columns[(mask[top:bottom+1, left:right+1] & corridor).any(axis=0)]
+        gaps = np.diff(ink) - 1
+        original_limit = style.get('max_gap_px', 8)
+        measured = int(gaps.max()) if gaps.size else 0
+        cap = min(120, max(30, 3*width_hi))
+        if original_limit < measured <= cap:
+            retry_spec = {**spec, 'style': {**style, 'max_gap_px': measured}}
+            retry = _track(mask, retry_spec)
+            if retry['status'] == 'proposed_unreviewed':
+                spec, result = retry_spec, retry
+                result['dash_gap_retry'] = {'original_limit_px': original_limit,
+                                            'measured_gap_px': measured}
+                for sample in result['samples']:
+                    sample['flags'].append('measured_dash_gap_retry_review')
     result['horizontal_stroke_rows'] = horizontal_strokes
     if result['status'] == 'disconnected':
         flag_horizontal_strokes(result['samples'], horizontal_strokes)
