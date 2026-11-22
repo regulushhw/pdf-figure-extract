@@ -750,6 +750,15 @@ def compare_current_cells(report, path):
         sheet, address = key.rsplit('!', 1)
         targets[sheet][address] = entry
     changes = defaultdict(int)
+    dashes = defaultdict(int)
+    dash_statuses = {
+        'reviewed_numeric': 'verified_replacement',
+        'printed_source': 'verified_replacement',
+        'numeric_candidate': 'candidate_needs_review',
+        'source_uncovered': 'confirmed_outside_coverage',
+        'source_unreadable': 'confirmed_unreadable',
+        'not_extracted': 'not_yet_extracted',
+    }
     book = load_workbook(path, read_only=True, data_only=True)
     try:
         for name, addresses in targets.items():
@@ -771,6 +780,10 @@ def compare_current_cells(report, path):
                         old = str(old)
                     status = entry['status']
                     entry['current_value'] = old
+                    if old == '—':
+                        disposition = dash_statuses.get(status, 'unresolved')
+                        entry['dash_disposition'] = disposition
+                        dashes[disposition] += 1
                     if old == '—' and status in ('reviewed_numeric', 'printed_source'):
                         change = 'dash_has_verified_replacement'
                     elif old == '—' and status == 'numeric_candidate':
@@ -787,7 +800,8 @@ def compare_current_cells(report, path):
                     changes[change] += 1
     finally:
         book.close()
-    report['current_workbook'] = {'file': str(path), 'sha256': sha(path), 'changes': dict(changes)}
+    report['current_workbook'] = {'file': str(path), 'sha256': sha(path), 'changes': dict(changes),
+                                  'dash_dispositions': dict(dashes)}
 
 
 def coarse_source_rounding(value, bounds):

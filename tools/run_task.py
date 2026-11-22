@@ -747,7 +747,8 @@ class Runner:
         path = self.output('coverage.json')
         write(path, report)
         return {'coverage': str(path), 'counts': report['counts'],
-                'current_changes': report.get('current_workbook', {}).get('changes', {})}
+                'current_changes': report.get('current_workbook', {}).get('changes', {}),
+                'dash_dispositions': report.get('current_workbook', {}).get('dash_dispositions', {})}
 
     def execute(self, action, part_id=None, decision=None, batch=None, points=None, regions=None, view_mode='points', cells=None):
         if action not in ACTIONS:
