@@ -17,6 +17,8 @@
 
 箱线任务使用分类横轴时，在 `gate_axes.x` 记录类别中心的原图像素位置及独立复查位置，`identity.x` 填写对应类别。程序以相邻类别中心的中点划分各组。组内箱可以偏离类别中心，但取数区域必须完整落在所属类别内。
 
+箱边、中位线和须线颜色不同时，`selector` 选箱边，另外配置 `median_selector` 与 `whisker_selector`。三者都以原图为准，可按图或按槽位配置。对抗锯齿颜色可用 `{"mode":"dominant_channel","channel":"blue","margin":81}`，表示蓝色通道至少比另两通道各高 81。须线为黑色时可用 RGB 距离筛选。颜色与角色须由图面确认，贴轴的须线仍保留复核标记。
+
 ```json
 {
   "sources":{"s":{"image":"source.png"}},

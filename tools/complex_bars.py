@@ -311,7 +311,7 @@ def body_baseline_at(panel, x):
     return y0 + (y1-y0)*(x-left)/(right-left)
 
 
-def analyze_boxplot(mask, spec):
+def analyze_boxplot(mask, spec, median_mask=None, whisker_mask=None):
     left, top, right, bottom = roi(spec['roi'], mask.shape)
     x = spec['x']
     half = spec['box_half_width']
@@ -319,9 +319,16 @@ def analyze_boxplot(mask, spec):
         raise ValueError('box center and half-width must fit inside the slot')
     band = mask[top:bottom+1, x-half:x+half+1]
     width = band.shape[1]
-    horizontal = band.sum(axis=1)
-    edges = blocks(np.flatnonzero(horizontal >= .85 * width))
+    box_rows = blocks(np.flatnonzero(band.sum(axis=1) >= .85 * width))
     roles = {role: [] for role in ('q3', 'median', 'q1', 'upper_whisker', 'lower_whisker')}
+    edges = box_rows
+    if median_mask is not None:
+        edges = []
+        median_band = median_mask[top:bottom+1, x-half:x+half+1]
+        median_rows = blocks(np.flatnonzero(median_band.sum(axis=1) >= .85 * width))
+        if (len(box_rows) == 2 and len(median_rows) == 1 and
+                box_rows[0][1] < median_rows[0][0] <= median_rows[0][1] < box_rows[1][0]):
+            edges = [box_rows[0], median_rows[0], box_rows[1]]
     evidence = {'horizontal_box_bands': [[top+a, top+b] for a,b in edges],
                 'role_y_bounds_px': {}}
     if len(edges) != 3:
@@ -333,7 +340,9 @@ def analyze_boxplot(mask, spec):
     for role, (a,b) in zip(('q3', 'median', 'q1'), edges):
         roles[role].append([x, top+(a+b)/2])
         evidence['role_y_bounds_px'][role] = [top+a, top+b]
-    center = band[:, half-1:half+2].any(axis=1)
+    whiskers = band if whisker_mask is None else whisker_mask[top:bottom+1, x-half:x+half+1]
+    horizontal = whiskers.sum(axis=1)
+    center = whiskers[:, half-1:half+2].any(axis=1)
     flags = []
     for role, rows, anchor in (('upper_whisker', range(first), first),
                                ('lower_whisker', range(last+1, len(band)), last)):
@@ -397,7 +406,17 @@ def run(path,out):
                     raise ValueError('body_baseline is only for bar positions without range stems')
                 zero=body_baseline_at(panel,spec['x'])
             if kind=='boxplot':
-                roles,flags,geo=analyze_boxplot(mask,spec)
+                role_masks = []
+                for role in ('median', 'whisker'):
+                    role_selector = spec.get(f'{role}_selector', job.get(f'{role}_selector'))
+                    role_key = (panel['source'], json.dumps(role_selector, sort_keys=True), key[2])
+                    if role_selector is not None and role_key not in mask_cache:
+                        role_mask = select_pixels(rgb, role_selector)
+                        for a,b,c,d in spec.get('exclude_boxes',[]):
+                            role_mask[b:d+1,a:c+1] = False
+                        mask_cache[role_key] = role_mask
+                    role_masks.append(mask_cache.get(role_key))
+                roles,flags,geo=analyze_boxplot(mask,spec,*role_masks)
             elif kind=='bar':
                 roles,flags,geo=analyze_bar(mask,spec,zero,body_mask)
             else:

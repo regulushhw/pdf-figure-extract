@@ -11,6 +11,7 @@ import fitz
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
 from complex_bars import analyze_bar,analyze_boxplot,analyze_capped,body_baseline_at,fill_bar_interiors,locate_group_slots,run as bar_run
 from complex_curves import track,shared_ink,run as curve_run
+from propose_bitmap_points import select_pixels
 from run_task import Runner,write,read
 
 
@@ -40,6 +41,31 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(roles['upper_whisker'], [[25, 9]])
         self.assertEqual(roles['lower_whisker'], [])
         self.assertEqual(flags, ['lower_whisker_ambiguous'])
+
+    def test_boxplot_separates_colored_roles(self):
+        outline = np.zeros((75, 55), dtype=bool)
+        outline[[20, 41], 15:36] = True
+        outline[20:42, [15, 35]] = True
+        median = np.zeros_like(outline)
+        median[30, 15:36] = True
+        whiskers = np.zeros_like(outline)
+        whiskers[9:20, 25] = whiskers[42:56, 25] = True
+        whiskers[[9, 55], 20:31] = True
+        spec = {'roi': [11, 5, 39, 60], 'x': 25, 'box_half_width': 10}
+        roles, flags, _ = analyze_boxplot(outline, spec, median, whiskers)
+        self.assertEqual(roles['median'], [[25, 30]])
+        self.assertEqual(roles['lower_whisker'], [[25, 55]])
+        self.assertFalse(flags)
+        median[33, 15:36] = True
+        roles, flags, _ = analyze_boxplot(outline, spec, median, whiskers)
+        self.assertEqual(roles['median'], [])
+        self.assertEqual(flags, ['box_horizontal_bands_ambiguous'])
+
+    def test_boxplot_color_selector_keeps_antialiased_ink(self):
+        rgb = np.array([[[0, 0, 255], [128, 128, 255], [250, 250, 255],
+                         [255, 0, 0], [0, 0, 0]]], dtype=np.uint8)
+        result = select_pixels(rgb, {'mode': 'dominant_channel', 'channel': 'blue', 'margin': 81})
+        self.assertEqual(result.tolist(), [[True, True, False, False, False]])
 
     def test_positive_bar_tip_separate_from_stem_endpoints(self):
         mask,_=self.mask();roles,flags,evidence=analyze_bar(mask,self.spec(),90)

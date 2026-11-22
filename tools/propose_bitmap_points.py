@@ -17,6 +17,14 @@ from review_points import read_json, write_json, load_job, digest
 
 
 def select_pixels(rgb, selector):
+    if selector['mode'] == 'dominant_channel':
+        channel = selector['channel']
+        margin = selector['margin']
+        if channel not in ('red', 'green', 'blue') or type(margin) is not int or not 1 <= margin <= 255:
+            raise ValueError('dominant_channel requires an RGB channel and integer margin 1–255')
+        index = ('red', 'green', 'blue').index(channel)
+        values = rgb.astype(np.int16)
+        return values[..., index] - np.max(np.delete(values, index, axis=2), axis=2) >= margin
     if selector['mode']=='gray':
         lo,hi=selector['range']
         if not 0<=lo<=hi<=255:raise ValueError('invalid gray range')
