@@ -553,26 +553,32 @@ def route_panel(root, page_number, bounds):
             raise ValueError('panel bounds outside PDF page')
         images = []
         image_boxes = []
+        paints = page.get_bboxlog()
         for info in page.get_image_info(xrefs=True):
             image_box = fitz.Rect(info['bbox'])
             overlap = image_box & panel
             if not overlap.is_empty:
                 image_boxes.append(image_box)
                 images.append({'xref': info['xref'], 'intersection_pt': list(overlap),
-                               'size_px': [info['width'], info['height']]})
+                               'size_px': [info['width'], info['height']],
+                               'image_bounds_pt': list(image_box),
+                               'paint_order_candidates': [seq for seq, (kind, box) in enumerate(paints)
+                                                          if kind == 'fill-image' and fitz.Rect(box) == image_box]})
         # Axis rules can have zero height or width. Only non-degenerate paths
         # with a footprint in both dimensions count as vector evidence here.
         vectors = []
         frames = []
         backdrops = []
         axis_aligned = []
-        image_paints = [(seq, fitz.Rect(box)) for seq, (kind, box) in enumerate(page.get_bboxlog())
+        image_paints = [(seq, fitz.Rect(box)) for seq, (kind, box) in enumerate(paints)
                         if kind == 'fill-image' and any(fitz.Rect(box) == image for image in image_boxes)]
         for drawing in page.get_drawings():
             rect = drawing['rect']
             overlap = rect & panel
             if not overlap.is_empty:
-                item = {'intersection_pt': list(overlap), 'segments': len(drawing['items'])}
+                item = {'intersection_pt': list(overlap), 'segments': len(drawing['items']),
+                        'path_bounds_pt': list(rect), 'paint_order': drawing['seqno'],
+                        'paint_type': drawing['type']}
                 rectangle = len(drawing['items']) == 1 and drawing['items'][0][0] == 're'
                 if (rectangle and drawing['type'] == 'f' and drawing.get('fill') == (1., 1., 1.)
                         and any(drawing['seqno'] < seq and rect.contains(box) for seq, box in image_paints)):
