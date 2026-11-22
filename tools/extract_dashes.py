@@ -11,7 +11,8 @@ from pathlib import Path
 import numpy as np
 import fitz
 sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
-from calib import page_pixmap_bgr,mark_points,record_envelope,fit_axis
+from calib import page_pixmap_bgr,mark_points,record_envelope
+from review_points import calibrated_axis
 
 def dash_segments(page,frame,max_length=5,max_thickness=.8,cap_width=None,fill_color=(0,0,0)):
     if any(not math.isfinite(float(v)) or float(v)<=0 for v in (max_length,max_thickness)):
@@ -73,11 +74,11 @@ def sample(segments,xs,max_gap=3,endpoint_tolerance=.5):
 def main():
     job=json.loads(Path(sys.argv[1]).read_text(encoding='utf-8-sig'))
     doc=fitz.open(job['pdf']);pg=doc[job['page']-1]
-    def axis(spec):
-        if spec.get('scale','linear')!='linear':raise ValueError('linear axes only')
-        f,inv,ab,resid,ticks=fit_axis(spec['ticks'])
-        return f,inv,{'fit':ab,'residual':resid,'ticks':ticks}
-    xf,xi,xc=axis(job['x']);yf,yi,yc=axis(job['y'])
+    xaxis, yaxis = calibrated_axis(job['x'], 'x'), calibrated_axis(job['y'], 'y')
+    xi, yf = xaxis['inv'], yaxis['f']
+    calibration = {name: {'fit': axis['fit'], 'residual': axis['resid'], 'ticks': axis['ticks'],
+                          'max_check_residual_px': axis['max_check_residual_px'], 'kind': axis['kind']}
+                   for name, axis in (('x', xaxis), ('y', yaxis))}
     segments,ids=dash_segments(pg,job['frame'],job['max_length'],job['max_thickness'],job.get('cap_width'),job['fill_color'])
     if not segments:raise ValueError('no selected dash fragments; do not fill with zero')
     pts=sample(segments,[xi(v) for v in job['sample_at']],job['max_gap'],job['endpoint_tolerance'])
@@ -85,7 +86,7 @@ def main():
               'method':method,'status':'extracted_unreviewed' if y is not None else 'missing'}
              for label,(x,y,method) in zip(job['sample_at'],pts)]
     out={'records':records,'segments':segments,'object_indices':ids,
-         '_evidence':record_envelope(job,records,{'x':xc,'y':yc},'filled_quadrilateral_dashes')}
+         '_evidence':record_envelope(job,records,calibration,'filled_quadrilateral_dashes')}
     out['_evidence']['selection']={k:job[k] for k in ('frame','fill_color','max_length','max_thickness','max_gap','endpoint_tolerance')}
     if 'cap_width' in job:out['_evidence']['selection']['cap_width']=job['cap_width']
     prefix=job['prefix'];Path(prefix).parent.mkdir(parents=True,exist_ok=True)

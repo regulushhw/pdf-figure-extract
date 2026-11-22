@@ -80,6 +80,23 @@ class OcrTests(unittest.TestCase):
         self.assertEqual(hints['label_candidates'][0]['kind'],'unit_or_axis_label')
         self.assertNotIn('selector',hints)
 
+    def test_shifted_marker_centers_use_visible_tick_strokes(self):
+        image=Image.new('RGB',(220,180),'white')
+        draw=ImageDraw.Draw(image)
+        draw.rectangle((20,20,200,120),outline='black')
+        words=[]
+        for i,x in enumerate((40,100,160)):
+            draw.line((x,120,x,126),fill='black')
+            shift=(5,-4,5)[i]
+            words.append({'id':f'w{i}','numeric_candidate':i*10,
+                          'coordinate_reliable':True,'rotation':0,
+                          'bbox':[x+shift-3,130,x+shift+3,138]})
+        group=next(g for g in suggestions(words,[],[20,20,200,120],image)['axis_groups']
+                   if g['side']=='bottom')
+        self.assertEqual(group['fit_basis'],'stroke_position')
+        self.assertEqual([t['stroke_position'] for t in group['ticks']],[40,100,160])
+        self.assertEqual([t['position'] for t in group['ticks']],[45,96,165])
+
     def test_valid_confirmation_and_unit_correction_reason(self):
         a,d=self.fixture()
         d['unit']={'line_id':'unit','text':'Ml/d','reason':'Slash checked on source image.'}

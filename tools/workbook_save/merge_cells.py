@@ -9,6 +9,49 @@ def package(p):
 def sheets(pkg):
  ids={r.get('Id'):posixpath.normpath(posixpath.join('xl',r.get('Target'))) if not r.get('Target').startswith('/') else r.get('Target').lstrip('/') for r in E.fromstring(pkg['xl/_rels/workbook.xml.rels'])}
  return {s.get('name'):ids[s.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')] for s in E.fromstring(pkg['xl/workbook.xml']).find(q('sheets'))}
+
+def apply_number_formats(style_xml, specs, indexes):
+ styles=E.fromstring(style_xml)
+ table=styles.find(q('numFmts'))
+ xfs=styles.find(q('cellXfs'))
+ if xfs is None or not len(xfs):raise ValueError('number formats require existing workbook cell styles')
+ ids={'0':'1','0.00':'2'}
+ if table is not None:
+  ids.update({node.get('formatCode'):node.get('numFmtId') for node in table})
+ cache={}
+ changed=False
+ for spec in specs:
+  decimals=spec['decimals']
+  if type(decimals) is not int or not 0<=decimals<=15:raise ValueError('invalid decimal display precision')
+  mask='0' if not decimals else '0.'+'0'*decimals
+  fmt=ids.get(mask)
+  if fmt is None:
+   if table is None:
+    table=E.Element(q('numFmts'),count='0')
+    styles.insert(0,table)
+   fmt=str(max([163,*(int(node.get('numFmtId')) for node in table)])+1)
+   E.SubElement(table,q('numFmt'),numFmtId=fmt,formatCode=mask)
+   table.set('count',str(len(table)));ids[mask]=fmt;changed=True
+  left,top,right,bottom=range_boundaries(spec['range'])
+  cells=indexes[spec['sheet']][1]
+  for row in range(top,bottom+1):
+   for col in range(left,right+1):
+    address=f'{get_column_letter(col)}{row}'
+    cell=cells.get(address)
+    if cell is None or cell.find(q('v')) is None or cell.get('t','n')!='n':
+     raise ValueError(f"{spec['sheet']}!{address}: expected a numeric cell for display precision")
+    previous=int(cell.get('s','0'))
+    if xfs[previous].get('numFmtId','0')==fmt:
+     continue
+    key=(previous,fmt)
+    if key not in cache:
+     xf=copy.deepcopy(xfs[previous]);xf.set('numFmtId',fmt);xf.set('applyNumberFormat','1')
+     existing=next((i for i,node in enumerate(xfs) if E.tostring(node)==E.tostring(xf)),None)
+     cache[key]=len(xfs) if existing is None else existing
+     if existing is None:
+      xfs.append(xf);xfs.set('count',str(len(xfs)));changed=True
+    cell.set('s',str(cache[key]))
+ return E.tostring(styles,encoding='utf-8') if changed else style_xml
 for a in (list(map(int,sys.argv[1:])) or [1,2,5]):
  p=json.loads((W/f'A{a}_修改计划.json').read_text(encoding='utf-8'));target=Path(p['target'])
  assert hashlib.sha256(target.read_bytes()).hexdigest()==p['input_sha256'],'Concurrent source change'
@@ -99,9 +142,13 @@ for a in (list(map(int,sys.argv[1:])) or [1,2,5]):
    if max(old_left,x)<=min(old_right,z) and max(old_top,y)<=min(old_bottom,t):raise ValueError('merge overlaps an existing source merge')
   else:E.SubElement(merged,q('mergeCell'),ref=spec['range'])
   merged.set('count',str(len(merged)))
- touched={spec['sheet'] for kind in ('changes','styles','row_heights','column_widths','merges') for spec in p.get(kind,[])}
+ if p.get('number_formats'):
+  out['xl/styles.xml']=apply_number_formats(orig['xl/styles.xml'],p['number_formats'],indexes)
+ touched={spec['sheet'] for kind in ('changes','styles','row_heights','column_widths','merges','number_formats') for spec in p.get(kind,[])}
  for s in touched:out[os[s]]=E.tostring(trees[s],encoding='utf-8')
- changed=[n for n in orig if orig[n]!=out[n]];assert set(changed)<=set(os[s] for s in touched)
+ changed=[n for n in orig if orig[n]!=out[n]];allowed={os[s] for s in touched}
+ if p.get('number_formats'):allowed.add('xl/styles.xml')
+ assert set(changed)<=allowed
  with zipfile.ZipFile(W/f'A{a}_保存前.xlsx','w',zipfile.ZIP_DEFLATED) as z:
   for n,b in out.items():z.writestr(n,b)
  (W/f'A{a}_包检查.json').write_text(json.dumps({'changed_parts':changed,'all_other_parts_identical':True,'images_preserved':True},indent=2),encoding='utf-8')

@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import defaultdict
 
 TOOLS = Path(__file__).resolve().parent
 REPO = TOOLS.parent
@@ -30,7 +31,7 @@ EXTRACTORS = {'vector_bars': 'extract_bars.py', 'vector_lines': 'extract_lines.p
               'bitmap_bar_ranges': 'complex_bars.py', 'bitmap_curve_identity': 'complex_curves.py'}
 EXTERNAL = {'unplotter_csv', 'chartdetective_csv', 'webplotdigitizer_csv'}
 METHODS = set(EXTRACTORS) | EXTERNAL | {'review_candidates', 'manual_points'}
-ACTIONS = {'status', 'scan', 'trial', 'approve', 'run', 'inspect', 'edit', 'undo',
+ACTIONS = {'status', 'scan', 'coverage', 'trial', 'approve', 'run', 'inspect', 'edit', 'undo',
            'review', 'apply', 'accept', 'reject', 'draft', 'save', 'verify', 'drag'}
 
 
@@ -102,6 +103,56 @@ def readonly_tools():
                 api.CloseHandle(handle)
     else:
         yield 'hash_check_only_use_external_sandbox_for_write_denial'
+
+
+def add_bound_changes(plan, readings):
+    """Use verified cell bindings as the default draft writes."""
+    from openpyxl.utils.cell import coordinate_from_string, get_column_letter, range_boundaries
+    changes = plan.setdefault('changes', [])
+    pending = dict(readings)
+    for change in changes:
+        left, top, _, _ = range_boundaries(change['range'])
+        for row, values in enumerate(change['values'], top):
+            for column, value in enumerate(values, left):
+                key = f"{change['sheet']}!{get_column_letter(column)}{row}"
+                reading = readings.get(key)
+                if reading is None:
+                    continue
+                expected = reading.get('output_value', reading['value'])
+                matches = value == '—' if expected is None else (
+                    type(value) in (int, float) and
+                    math.isclose(value, expected, rel_tol=0, abs_tol=reading['tolerance']))
+                if change.get('formula') or not matches:
+                    raise ValueError(f'{key}: planned write conflicts with bound source reading')
+                pending.pop(key, None)
+    by_row = defaultdict(list)
+    for key, reading in pending.items():
+        sheet, address = key.rsplit('!', 1)
+        _, row = coordinate_from_string(address)
+        column = range_boundaries(address)[0]
+        value = reading.get('output_value', reading['value'])
+        if value is not None and reading.get('decimals') is not None:
+            value = round(value, reading['decimals'])
+        by_row[sheet, row].append((column, '—' if value is None else value))
+    for (sheet, row), cells in sorted(by_row.items()):
+        blocks = []
+        for column, value in sorted(cells):
+            if not blocks or column != blocks[-1][0] + len(blocks[-1][1]):
+                blocks.append((column, []))
+            blocks[-1][1].append(value)
+        for start, values in blocks:
+            first = f'{get_column_letter(start)}{row}'
+            last = f'{get_column_letter(start + len(values) - 1)}{row}'
+            changes.append({'sheet': sheet, 'range': f'{first}:{last}', 'values': [values]})
+    formats = plan.setdefault('number_formats', []) if any(
+        item.get('decimals') is not None and item['value'] is not None for item in readings.values()) else []
+    for key, item in sorted(readings.items()):
+        if item.get('decimals') is None or item['value'] is None:
+            continue
+        sheet, address = key.rsplit('!', 1)
+        spec = {'sheet':sheet, 'range':address, 'decimals':item['decimals']}
+        if spec not in formats:
+            formats.append(spec)
 
 
 class Runner:
@@ -203,6 +254,9 @@ class Runner:
                 job[field] = str((source.parent / job[field]).resolve())
                 inputs[job[field]] = sha(job[field])
         job.pop('prefix', None)
+        if self.scope is not None and part['method'] in METHODS:
+            from extraction_gate import check_job
+            check_job(self.scope['cards'][part['id']], job, part['method'], bind=True)
         key = digest({'job': job, 'inputs': inputs, 'method': part['method'],
                       'scope': part['scope'], 'tools': self.state['tools']})
         return job, inputs, key
@@ -216,8 +270,7 @@ class Runner:
             raise ValueError(f'unsupported method {method}: maintenance required; scope remains incomplete')
         job, inputs, key = self.normalized(part, trial)
         if self.scope is not None:
-            from extraction_gate import check_configured_coverage, check_job
-            check_job(self.scope['cards'][part['id']], job, method)
+            from extraction_gate import check_configured_coverage
             check_configured_coverage(self.scope, part['id'], job, method)
         cached = self.state['cache'].get(key)
         if cached:
@@ -351,6 +404,33 @@ class Runner:
             raise ValueError(f'{part["id"]}: {stage} missing, changed or stale')
         return record
 
+    def bind_vector_gaps(self, record, data, decisions):
+        evidence = data.get('_evidence', {})
+        rows = [r for r in evidence.get('records', []) if r.get('value') is None]
+        if not rows and not decisions:
+            return
+        if self.scope is None or evidence.get('method') != 'vector_lines' or not isinstance(decisions, list):
+            raise ValueError('only gated vector lines support explicit vector gaps')
+        keys = {(d['series'], d['x']): d for d in decisions}
+        if len(keys) != len(decisions) or set(keys) != {(r['series'], r['x']) for r in rows}:
+            raise ValueError('review every missing vector reading exactly once')
+        image = str(Path(record['folder']) / 'data_source_check.png')
+        if image not in record['images']:
+            raise ValueError('vector gap requires the original review image')
+        for row in rows:
+            d = keys[row['series'], row['x']]
+            gap = row.get('gap_candidate', {})
+            bbox = gap.get('source_bbox_px')
+            kind = d.get('kind')
+            note = d.get('reason')
+            if (not bbox or gap.get('reason') == 'sample_outside_panel'
+                    or not isinstance(note, str) or not note.strip()
+                    or kind not in ('source_uncovered', 'source_unreadable')
+                    or (kind == 'source_uncovered' and gap.get('reason') != 'outside_selected_path_extent')):
+                raise ValueError(f'{row["series"]}, x={row["x"]}: invalid vector source gap decision')
+            row['review'] = {'missing_evidence': {
+                'kind': kind, 'reason': note, 'image': image, 'sha256': record['files'][image], 'bbox': bbox}}
+
     def attest(self, part, stage, decision):
         record = self.current(part, stage)
         d = read(self.path(decision))
@@ -377,9 +457,10 @@ class Runner:
                 data = Path(record['folder']) / 'data.json'
                 if not data.exists():
                     raise ValueError('bitmap candidates require review/apply before accept')
-                records = read(data).get('_evidence', {}).get('records', [])
-                if not records or any(r.get('value') is None for r in records):
-                    raise ValueError('missing values or evidence records; cannot accept complete scope')
+                data = read(data)
+                if not data.get('_evidence', {}).get('records'):
+                    raise ValueError('no evidence records; cannot accept complete scope')
+                self.bind_vector_gaps(record, data, d.get('vector_gaps', []))
         saved = self.output(f'{part["id"]}_{stage}_decision_{digest(d)}.json')
         self.review_attempt(part, record['fingerprint'], 'confirmed', d['note'])
         if not saved.exists():
@@ -422,7 +503,27 @@ class Runner:
             raise ValueError('invalid paper ID')
         contracts = {str(self.path(cfg[k])):sha(self.path(cfg[k])) for k in ['checks','audit']}
         evidence_path = self.output('delivery_evidence.json')
+        results = None
+        evidence = {}
+        readings = None
         if self.scope is not None:
+            from extraction_gate import bound_readings, expand_figure_previews
+            evidence = read(evidence_path) if evidence_path.exists() else {}
+            results = {}
+            for part in self.parts:
+                part_state = self.state['parts'][part['id']]
+                if 'result' in part_state:
+                    results[part['id']] = self.checked_result(part_state['result'])
+                else:
+                    record = self.current(part, 'run')
+                    data = read(Path(record['folder']) / 'data.json')
+                    approval = read(part_state['run_approval']['file'])
+                    self.bind_vector_gaps(record, data, approval.get('vector_gaps', []))
+                    results[part['id']] = data
+            missing = evidence.setdefault('missing', {})
+            readings = {**bound_readings(self.scope, results, missing), **self.printed}
+            add_bound_changes(plan, readings)
+            expand_figure_previews(plan)
             revision = digest({'plan': plan, 'contracts': contracts,
                                'delivery_evidence': sha(evidence_path) if evidence_path.exists() else None,
                                'accepted': [self.state['parts'][p['id']]['run_approval']['sha256']
@@ -440,6 +541,19 @@ class Runner:
             raise ValueError('save plan changed; keep evidence and use a new task')
         if not plan_path.exists():
             write(plan_path, plan)
+        if readings is not None:
+            bindings_path = folder / 'bound_readings.json'
+            if bindings_path.exists():
+                if read(bindings_path) != readings:
+                    raise ValueError('bound draft readings changed')
+            else:
+                write(bindings_path, readings)
+            missing_path = folder / 'bound_missing_evidence.json'
+            if missing:
+                if missing_path.exists() and read(missing_path) != missing:
+                    raise ValueError('bound source gap evidence changed')
+                if not missing_path.exists():
+                    write(missing_path, missing)
         old_contracts = self.state.get('workbook_contracts')
         if self.scope is None and old_contracts and old_contracts != contracts:
             raise ValueError('verification contracts changed after draft preparation')
@@ -452,22 +566,10 @@ class Runner:
             raise ValueError('configured Node and PowerShell required for workbook pipeline')
         draft = folder / f'A{paper}_保存前.xlsx'
         preview_receipt = folder / 'draft_previews.json'
-        results = None
-        if self.scope is not None:
-            results = {}
-            for part in self.parts:
-                part_state = self.state['parts'][part['id']]
-                if 'result' in part_state:
-                    results[part['id']] = self.checked_result(part_state['result'])
-                else:
-                    record = self.current(part, 'run')
-                    results[part['id']] = read(Path(record['folder']) / 'data.json')
-
         def reconcile(book):
             if self.scope is not None:
                 from extraction_gate import check_delivery
-                check_delivery(self.scope, book, read(evidence_path) if evidence_path.exists() else {},
-                               results, self.printed)
+                check_delivery(self.scope, book, evidence, results, self.printed)
 
         if action == 'draft':
             if draft.exists():
@@ -534,10 +636,24 @@ class Runner:
         revision=prior['sha256'] if prior else digest(result)
         return state,prior,jp,j,sources,panels,result,revision
 
-    def point_action(self,action,part,record,job,decision,batch,points,regions,view_mode='points',redraw=True):
+    def point_action(self,action,part,record,job,decision,batch,points,regions,view_mode='points',redraw=True, cells=None):
         from review_points import load_result,summary,inspect_points,edit_points
         start=time.perf_counter()
         state,prior,jp,j,sources,panels,result,revision=self.load_points(part,job)
+        if cells is not None:
+            from extraction_gate import coverage_report
+
+            if self.scope is None:
+                raise ValueError('cell inspection requires frozen worksheet bindings')
+            report = coverage_report(self.scope, {part['id']: result}, self.printed)['cells']
+            points = []
+            for cell in cells:
+                target = report.get(cell, {}).get('review_target')
+                if target is None:
+                    raise ValueError(f'{cell}: no uniquely bound bitmap reading in part {part["id"]}')
+                points.append(target)
+            if len({(p['id'], p['role']) for p in points}) != len(points):
+                raise ValueError('cell selection binds the same reading more than once')
         if action=='inspect':redraw=True
         if not hasattr(self,'_point_images'):self._point_images={}
         images=self._point_images.setdefault(part['id'],{})
@@ -572,6 +688,8 @@ class Runner:
         if redraw:
             folder=self.output(f'point_views/{part["id"]}/{time.time_ns()}')
             view=inspect_points(result,folder,revision,affected,regions,images,ghosts,view_mode)
+            if cells is not None:
+                view['cell_targets'] = dict(zip(cells, points))
             render_seconds=time.perf_counter()-render_start
         else:
             view={'view':None,'images':[],'image_hashes':{},'revision':revision,'views':[],'points':[],
@@ -593,12 +711,52 @@ class Runner:
         from drag_points import perform_drag
         return perform_drag(self,request)
 
-    def execute(self, action, part_id=None, decision=None, batch=None, points=None, regions=None, view_mode='points'):
+    def coverage(self):
+        from extraction_gate import compare_current_cells, coverage_report
+        from review_points import initial_result, load_job
+
+        if self.scope is None:
+            raise ValueError('coverage requires frozen worksheet bindings')
+        results = {}
+        for part in self.parts:
+            part_id = part['id']
+            state = self.state['parts'].get(part_id, {})
+            if 'run' not in state:
+                continue
+            record = self.current(part, 'run')
+            folder = Path(record['folder'])
+            candidates = folder / 'candidates/review_job.json'
+            if 'result' in state:
+                results[part_id] = self.checked_result(state['result'])
+            elif candidates.is_file():
+                results[part_id] = initial_result(*load_job(candidates))
+            elif (folder / 'data.json').is_file():
+                data = read(folder / 'data.json')
+                if 'run_approval' in state:
+                    self.approved(part, 'run')
+                    approval = read(state['run_approval']['file'])
+                    self.bind_vector_gaps(record, data, approval.get('vector_gaps', []))
+                    for row in data.get('_evidence', {}).get('records', []):
+                        if row.get('value') is not None:
+                            row['status'] = 'reviewed'
+                results[part_id] = data
+        report = coverage_report(self.scope, results, self.printed)
+        if self.task.get('workbook'):
+            plan = read(self.path(self.task['workbook']['plan']))
+            compare_current_cells(report, Path(plan['target']))
+        path = self.output('coverage.json')
+        write(path, report)
+        return {'coverage': str(path), 'counts': report['counts'],
+                'current_changes': report.get('current_workbook', {}).get('changes', {})}
+
+    def execute(self, action, part_id=None, decision=None, batch=None, points=None, regions=None, view_mode='points', cells=None):
         if action not in ACTIONS:
             raise ValueError('unknown action; arbitrary execution forbidden')
         if action == 'status':
             return {'parts': self.state['parts'], 'executions': self.state['executions'],
                     'cache_hits': self.state['cache_hits'], 'computer_seconds': round(self.state['computer_seconds'], 3)}
+        if action == 'coverage':
+            return self.coverage()
         if action == 'scan':
             key = digest({'pdf': sha(self.pdf), 'tools': self.state['tools']})
             folder = self.output(f'scan/{key}'); output = folder / 'scan.json'
@@ -644,7 +802,7 @@ class Runner:
         if not job.exists():
             raise ValueError('review/apply supported for bitmap review jobs; vector/export uses accept attestation')
         if action in ('inspect','edit','undo'):
-            return self.point_action(action,part,record,job,decision,batch,points,regions,view_mode)
+            return self.point_action(action,part,record,job,decision,batch,points,regions,view_mode,cells=cells)
         from review_points import prepare, apply
         result_record = state.get('result')
         if result_record:
@@ -682,7 +840,7 @@ class Runner:
                 raise ValueError('frozen scope changed; prepare a new task')
             if digest({str(p.relative_to(TOOLS)):sha(p) for p in code_files()}) != self.state['tools']:
                 raise ValueError('tool code changed during session; maintenance requires a new task')
-            allowed={'action','part','decision','batch','points','regions','view_mode'}
+            allowed={'action','part','decision','batch','points','regions','view_mode','cells'}
             drag_keys={'command','target','role','pixel','data','x','y','panel','series','box','pad','zoom','source','targets'}
             extra=set(request)-allowed
             if request.get('action')=='drag':
@@ -693,11 +851,18 @@ class Runner:
                 raise ValueError('view_mode must be points, objects or objects_full')
             if 'view_mode' in request and request['action'] not in ('inspect','edit'):
                 raise ValueError('view_mode is only supported for inspect/edit')
+            if 'cells' in request:
+                cells = request['cells']
+                if (request['action'] != 'inspect' or 'points' in request or
+                        not isinstance(cells, list) or not cells or
+                        any(not isinstance(cell, str) or not cell for cell in cells)):
+                    raise ValueError('cells requires inspect, worksheet addresses, and no point selectors')
             if request.get('action')=='drag':
                 result=self.drag(request)
             else:
                 result = self.execute(request['action'], request.get('part'), request.get('decision'), request.get('batch'),
-                                      request.get('points'),request.get('regions'),request.get('view_mode','points'))
+                                      request.get('points'),request.get('regions'),request.get('view_mode','points'),
+                                      request.get('cells'))
             write(self.state_path, self.state)
             # Keep stdout compact; full state/records remain on disk.
             if request['action'] == 'status':
@@ -713,6 +878,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('task'); parser.add_argument('action', choices=sorted(ACTIONS | {'serve'}))
     parser.add_argument('--part'); parser.add_argument('--decision'); parser.add_argument('--batch')
+    parser.add_argument('--cell', action='append', dest='cells')
     args = parser.parse_args()
     try:
         with readonly_tools() as protection:
@@ -728,8 +894,11 @@ def main():
                         reply = {'ok': False, 'error': str(exc)}
                     print(json.dumps(reply, ensure_ascii=False), flush=True)
             else:
-                reply = runner.dispatch({'action': args.action, 'part': args.part,
-                                         'decision': args.decision, 'batch': args.batch})
+                request = {'action': args.action, 'part': args.part,
+                           'decision': args.decision, 'batch': args.batch}
+                if args.cells is not None:
+                    request['cells'] = args.cells
+                reply = runner.dispatch(request)
                 print(json.dumps(reply, ensure_ascii=False))
                 return 0 if reply['ok'] else 1
     except Exception as exc:

@@ -2,6 +2,7 @@
 运行：python tests/test_regressions.py [--output-dir PATH]
 """
 import sys,json,tempfile,unittest,subprocess,argparse
+import math
 import zipfile,xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
@@ -156,7 +157,45 @@ class Regression(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
         data=json.loads((OUT/'styles.json').read_text(encoding='utf-8'))
         self.assertEqual(data['_evidence']['series_binding'],styles)
+        thin, bold = (row['measurement'] for row in data['_evidence']['records'])
+        self.assertAlmostEqual(thin['value_bounds'][0], 60 - .2*math.hypot(1, .25), places=5)
+        self.assertGreater(bold['pdf_y_bounds_pt'][1] - bold['pdf_y_bounds_pt'][0],
+                           thin['pdf_y_bounds_pt'][1] - thin['pdf_y_bounds_pt'][0])
+        self.assertEqual(thin['display_decimals'], 0)
         self.assertTrue((OUT/'styles_check.png').exists())
+
+    def test_vector_line_axis_uses_exact_log_ticks_and_independent_check(self):
+        axes={'kind':'log10','ticks':[[10,1],[30,100]],'check_ticks':[[20,10]]}
+        fit=lines.calibrated_axis(axes,'y')
+        self.assertAlmostEqual(fit['f'](20),10)
+        self.assertAlmostEqual(fit['inv'](10),20)
+        with self.assertRaisesRegex(ValueError,'independent tick'):
+            lines.calibrated_axis({**axes,'check_ticks':[[23,10]]},'y')
+
+    def test_vector_gap_distinguishes_visible_extent_from_an_internal_gap(self):
+        frame = [0, 0, 20, 20]
+        ends = [(p, 1) for a, b in [((2, 8), (5, 8)), ((8, 8), (22, 8))]
+                for p in lines.clipped_endpoints(a,b,frame)]
+        self.assertEqual(lines.missing_intersection(1,frame,ends,0)['reason'],
+                         'outside_selected_path_extent')
+        self.assertEqual(lines.missing_intersection(1.8,frame,ends,0)['reason'],
+                         'close_to_path_endpoint')
+        gap = lines.missing_intersection(7,frame,ends,0)
+        self.assertEqual(gap['reason'], 'no_intersection_within_path_extent')
+        self.assertEqual(gap['path_pdf_x_pt'], [2,20])
+
+    def test_vector_inset_exclusion_keeps_main_path_crossing_inset(self):
+        with fitz.open() as doc:
+            page=doc.new_page(width=200,height=200)
+            page.draw_line((20,100),(180,100),color=(0,0,0))
+            page.draw_line((65,80),(135,80),color=(0,0,0))
+            x=lines.calibrated_axis({'ticks':[[20,0],[180,160]]},'x')
+            y=lines.calibrated_axis({'ticks':[[40,40],[140,140]]},'y')
+            with self.assertRaisesRegex(ValueError,'同色曲线'):
+                lines.extract_lines(page,[15,35,185,145],{'0,0,0':'main'},x,y,[80])
+            rows,_=lines.extract_lines(page,[15,35,185,145],{'0,0,0':'main'},x,y,[80],
+                                       insets=[[60,70,140,110]])
+            self.assertAlmostEqual(rows['main'][0][1],100)
 
     def test_empty_checks_rejected(self):
         (OUT/'empty.json').write_text('[]')

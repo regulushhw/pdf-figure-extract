@@ -11,7 +11,7 @@ import fitz
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from prepare_task import prepare, build, trial, status, configure, read, write, sha
+from prepare_task import prepare, build, trial, status, configure, read, write, sha, route_panel, printed_grid
 
 
 class PrepareTests(unittest.TestCase):
@@ -61,6 +61,53 @@ class PrepareTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'no extraction part'):
             build(self.out)
         self.assertFalse((self.out / 'latest.json').exists())
+
+    def test_route_limits_mixed_page_objects_to_target_panel(self):
+        from io import BytesIO
+        raster = BytesIO()
+        Image.new('RGB', (80, 80), 'white').save(raster, format='PNG')
+        with fitz.open() as doc:
+            page = doc.new_page(width=400, height=400)
+            page.insert_image((20, 40, 150, 160), stream=raster.getvalue(), keep_proportion=False)
+            page.draw_rect((20, 40, 150, 160))
+            page.draw_line((180, 60), (360, 130))
+            page.draw_line((20, 90), (150, 90))  # reference rule
+            page.draw_line((20, 250), (150, 250))  # unclassified flat mark
+            path = self.root / 'mixed.pdf'
+            doc.save(path)
+        prepare(path, self.out)
+        bitmap = route_panel(self.out, 1, [18, 35, 155, 170])
+        self.assertEqual(bitmap['geometry'], 'native_bitmap_first')
+        self.assertEqual(len(bitmap['matching_frame_paths']), 1)
+        self.assertEqual(bitmap['axis_aligned_paths'], [[20, 90, 150, 90]])
+        self.assertEqual(route_panel(self.out, 1, [175, 40, 380, 160])['geometry'],
+                         'vector_first')
+        self.assertEqual(route_panel(self.out, 1, [10, 30, 390, 170])['geometry'],
+                         'mixed_check_vector_coverage')
+        self.assertEqual(route_panel(self.out, 1, [18, 235, 155, 265])['geometry'],
+                         'axis_aligned_check_identity')
+        part = read(self.out / 'decisions.json')['parts'][0]['id']
+        with self.assertRaisesRegex(ValueError, 'mixed_check_vector_coverage'):
+            configure(self.out, part, 'auto', [10, 30, 390, 170])
+        configured = configure(self.out, part, 'auto', [18, 35, 155, 170])
+        self.assertEqual(configured['method'], 'bitmap_points')
+        self.assertEqual(configured['method_selection']['geometry'], 'native_bitmap_first')
+        record = read(self.out / 'decisions.json')['parts'][0]
+        self.assertTrue(Path(record['parameters']['image']).is_file())
+
+    def test_printed_grid_preserves_unresolved_cell_and_source_tokens(self):
+        path = self.root / 'table.pdf'
+        with fitz.open() as doc:
+            p = doc.new_page(width=240, height=150)
+            for x, y, token in [(30,45,'- 2.5%'),(110,45,'1,250'),(30,75,'2 to 3')]:
+                p.insert_text((x,y),token)
+            doc.save(path)
+        prepare(path, self.out)
+        result = printed_grid(self.out, 1, [20,20,200,100], 'B6', [25,55,85], [25,105,185])
+        self.assertEqual({k:v['text'] for k,v in result['printed'].items()},
+                         {'B6':'- 2.5%','C6':'1,250'})
+        self.assertEqual([(c['cell'],c['text']) for c in result['unresolved']],
+                         [('B7','2 to 3'),('C7','')])
 
     def test_compact_vector_to_real_runner_and_cache(self):
         self.prepare(); self.vector()
@@ -141,16 +188,18 @@ class PrepareTests(unittest.TestCase):
         ImageDraw.Draw(im).line((10, 40, 90, 40), fill='black', width=3); im.save(image)
         d = read(self.out / 'decisions.json')
         d['parts'][0].update(action='extract', method='bitmap_points',
-            scope={'series': ['flow'], 'sampling': 'x=0,5,10'},
+            scope={'series': ['flow'], 'sampling': 'x=1,10,100'},
             parameters={'image': str(image), 'bounds': [1, 1, 98, 98],
-                'x_ticks': [[10, 0], [90, 10]], 'x_unit': 'probability',
-                'y_ticks': [[10, 100], [90, 0]], 'unit': 'Ml/d', 'sample_at': [0, 5, 10],
+                'x_ticks': [[10, 1], [90, 100]], 'x_kind': 'log10', 'x_unit': 'probability',
+                'x_check_ticks': [[50, 10]],
+                'y_ticks': [[10, 100], [90, 0]], 'unit': 'Ml/d', 'sample_at': [1, 10, 100],
                 'series': [{'name': 'flow', 'selector': {'mode': 'gray', 'range': [0, 80]}}]})
         write(self.out / 'decisions.json', d)
         compiled = build(self.out)
         task = read(compiled['task'])
         job = read(Path(compiled['task']).parent / task['parts'][0]['job'])
         self.assertEqual([i['anchor'][0] for i in job['items']], [10, 50, 90])
+        self.assertEqual(job['gate_axes']['x']['check_ticks'], [[50, 10]])
         result = trial(self.out)
         self.assertTrue(result['ok'], result)
         self.assertEqual(result['status'], 'unreviewed_candidates')

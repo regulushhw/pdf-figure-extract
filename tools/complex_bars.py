@@ -64,12 +64,28 @@ def stems(mask,box,min_length=6,cap_min_width=5,cap_max_width=24,zero=None):
         for a,z in runs(mask,x,t,b):
             if z-a+1<min_length:continue
             caps=[]
-            for end in (a,z):
+            for end, direction in ((a, 1), (z, -1)):
                 found=[]
+                # A thick vertical stroke can meet the absolute cap width.
+                # Compare against the contiguous shaft on the inward side.
+                shaft = []
+                for offset in range(3, min(11, (z-a)//2+1)):
+                    row = end + direction*offset
+                    lo = hi = x-l
+                    while lo > 0 and crop[row-t, lo-1]:
+                        lo -= 1
+                    while hi < r-l and crop[row-t, hi+1]:
+                        hi += 1
+                    shaft.append((lo+l, hi+l))
+                if len(shaft) >= 2:
+                    shaft_left, shaft_right = np.median(shaft, axis=0)
+                else:
+                    shaft_left = shaft_right = x
                 for y in range(max(t,end-2),min(b,end+2)+1):
                     for lo,hi in blocks(np.flatnonzero(horizontal[y-t])):
                         lo+=l;hi+=l
-                        if lo<=x-2 and hi>=x+2 and cap_min_width<=hi-lo+1<=cap_max_width:
+                        if (lo <= x-2 and hi >= x+2 and cap_min_width <= hi-lo+1 <= cap_max_width
+                                and lo <= shaft_left-1 and hi >= shaft_right+1):
                             found.append({'x0':lo,'x1':hi,'y':y})
                 caps.append(found)
             records.append({'x':x,'top':a,'bottom':z,'caps':caps})
@@ -133,15 +149,61 @@ def locate_group_slots(mask,panel,spec):
     return slots
 
 
+def guided_stems(mask, spec):
+    """Search along two observed shaft positions while retaining source pixels."""
+    l,t,r,b = roi(spec['roi'],mask.shape)
+    (x0,y0),(x1,y1) = spec['stem_guide']
+    if not (l <= x0 <= r and l <= x1 <= r and t <= y0 < y1 <= b):
+        raise ValueError('stem guide anchors must be ordered within the source ROI')
+    x = round(spec['x'])
+    slope = (x1-x0)/(y1-y0)
+    if abs(slope) > .1:
+        raise ValueError('stem guide exceeds the supported near-vertical range')
+    dy = np.arange(t,b+1)
+    shifts = np.rint(x0+(dy-y0)*slope-x).astype(int)
+    source_x = np.arange(l,r+1)[None,:] + shifts[:,None]
+    valid = (source_x>=l)&(source_x<=r)
+    aligned = valid & mask[dy[:,None],np.clip(source_x,l,r)]
+    candidates = stems(aligned,[0,0,r-l,b-t],spec.get('min_stem_length',6),
+                       spec.get('cap_min_width',5),spec.get('cap_max_width',24))
+    for stem in candidates:
+        stem['x']+=l
+        stem['top']+=t
+        stem['bottom']+=t
+        stem['source_x']=[int(stem['x']+shifts[y-t]) for y in (stem['top'],stem['bottom'])]
+        for caps in stem['caps']:
+            for cap in caps:
+                shift=int(shifts[cap['y']])
+                cap['y']+=t
+                cap['x0']+=l+shift
+                cap['x1']+=l+shift
+    return candidates
+
+
 def analyze_bar(mask,spec,zero,body_mask=None):
     box=spec['roi'];x=spec['x'];geo=bar_geometry(mask if body_mask is None else body_mask,box,x,zero,
         spec.get('min_body_width',4),spec.get('max_body_gap',2),spec.get('range_expected',True))
     tips=geo['bar_tips'];flags=[]
+    bounds = geo['role_y_bounds_px'] = {}
+    if len(tips) == 1:
+        left, _, right, _ = box
+        row = mask[int(tips[0][1]), left:right+1]
+        # The selected body edge must also have support in untouched ink.
+        center = int(round(x)) - left
+        min_width = spec.get('min_body_width', 4)
+        if spec.get('range_expected', True):
+            left_ink = row[:max(0, center-1)].sum()
+            right_ink = row[center+2:].sum()
+            raw_support = left_ink > 0 and right_ink > 0 and left_ink + right_ink >= min_width
+        else:
+            raw_support = row[center] and row.sum() >= min_width
+        if raw_support:
+            bounds['bar_tip'] = [tips[0][1], tips[0][1]]
     if len(tips)!=1:flags.append('bar_body_missing_or_two_sided')
     if not spec.get('range_expected',True):
         return {'bar_tip':tips},flags,geo
-    candidates=stems(mask,box,spec.get('min_stem_length',6),spec.get('cap_min_width',5),
-                     spec.get('cap_max_width',24),zero)
+    candidates=guided_stems(mask,spec) if 'stem_guide' in spec else stems(
+        mask,box,spec.get('min_stem_length',6),spec.get('cap_min_width',5),spec.get('cap_max_width',24),zero)
     # The actual stem must be near the assigned bar center. Edges are not stems.
     center=[s for s in candidates if abs(s['x']-x)<=spec.get('stem_window_px',2)]
     segments=[]
@@ -158,22 +220,95 @@ def analyze_bar(mask,spec,zero,body_mask=None):
             relevant=[s for s in segments if abs(s['top' if key.endswith('top') else 'bottom']-y)<=1]
             caps=[cap for s in relevant for cap in s['caps'][0 if key.endswith('top') else 1]]
             coincident=abs(y-zero)<=3 or any(abs(y-p[1])<=2 for p in tips)
+            inside_body=any(min(zero,p[1])<y<max(zero,p[1]) for p in tips)
             if caps and not coincident:flags.append(f'{key}_has_cap_requires_review')
             elif coincident:flags.append(f'{key}_merged_with_body_or_zero')
-            else:roles[key]=[[x,float(y)]]
+            elif inside_body:flags.append(f'{key}_inside_bar_body')
+            else:
+                segment=min(relevant,key=lambda s:(abs(s['top' if key.endswith('top') else 'bottom']-y),abs(s['x']-x)))
+                source_x=segment.get('source_x',[segment['x']]*2)[0 if key.endswith('top') else 1]
+                roles[key]=[[source_x,float(y)]]
+                rows = [s['top' if key.endswith('top') else 'bottom'] for s in relevant]
+                bounds[key] = [min(rows), max(rows)]
     else:flags.append('range_stem_not_identified')
     geo.update(stems=candidates,paired_segments=segments)
+    if 'stem_guide' in spec:
+        geo['stem_guide']=spec['stem_guide']
     return roles,flags,geo
 
 
+def same_capped_stroke(mask, left, right):
+    """Collapse thick ink only when the stem and both caps are shared."""
+    if abs(left['top']-right['top'])>2 or abs(left['bottom']-right['bottom'])>2:
+        return False
+    lo, hi = sorted((left['x'], right['x']))
+    for a, b in zip(left['caps'], right['caps']):
+        if not any(abs(c['y']-d['y'])<=1 and max(c['x0'],d['x0'])<=lo
+                   and min(c['x1'],d['x1'])>=hi for c in a for d in b):
+            return False
+    top=max(left['top'],right['top'])
+    bottom=min(left['bottom'],right['bottom'])
+    for fraction in (.25, .5, .75):
+        row=round(top+(bottom-top)*fraction)
+        if not mask[row-1:row+2,lo:hi+1].any(axis=0).all():
+            return False
+    return True
+
+
 def analyze_capped(mask,spec,zero):
+    window = spec.get('stem_x_window')
+    if window is not None:
+        left, _, right, _ = spec['roi']
+        if (not isinstance(window, list) or len(window) != 2
+                or any(type(x) is not int for x in window)
+                or not left < window[0] <= window[1] < right):
+            raise ValueError('stem_x_window must be an inclusive source-pixel interval inside the ROI')
     pairs=[]
     for s in stems(mask,spec['roi'],spec.get('min_stem_length',6),spec.get('cap_min_width',5),spec.get('cap_max_width',24)):
         if s['caps'][0] and s['caps'][1] and (not spec.get('crosses_zero',False) or s['top']<zero<s['bottom']):
             pairs.append(s)
-    roles={'capped_top':[[float(s['x']),float(s['top'])] for s in pairs],
-           'capped_bottom':[[float(s['x']),float(s['bottom'])] for s in pairs]}
-    return roles,([] if len(pairs)==1 else ['capped_pair_missing_or_ambiguous']),{'pairs':pairs}
+    groups=[]
+    for pair in sorted(pairs,key=lambda s:s['x']):
+        same=next((group for group in groups if same_capped_stroke(mask,group[-1],pair)
+                   and abs(group[0]['top']-pair['top'])<=2
+                   and abs(group[0]['bottom']-pair['bottom'])<=2),None)
+        if same is None:
+            groups.append([pair])
+        else:
+            same.append(pair)
+    distinct=[]
+    outside=[]
+    for group in groups:
+        columns = [s['x'] for s in group]
+        within = group if window is None else [s for s in group if window[0] <= s['x'] <= window[1]]
+        middle=(columns[0]+columns[-1])/2
+        representative=min(within or group,key=lambda s:abs(s['x']-middle))
+        evidence = {**representative,'contributing_stem_columns':columns}
+        if not within:
+            outside.append(evidence)
+        else:
+            distinct.append(evidence)
+    roles={'capped_top':[[float(s['x']),float(s['top'])] for s in distinct],
+           'capped_bottom':[[float(s['x']),float(s['bottom'])] for s in distinct]}
+    bounds = {}
+    if len(distinct) == 1:
+        stroke = distinct[0]
+        for index, end in enumerate(('top', 'bottom')):
+            rows = [stroke[end], *(cap['y'] for cap in stroke['caps'][index])]
+            bounds[f'capped_{end}'] = [min(rows), max(rows)]
+    evidence = {'pairs':distinct, 'role_y_bounds_px':bounds}
+    if window is not None:
+        evidence.update(stem_x_window=window, outside_stem_window=outside)
+    return roles,([] if len(distinct)==1 else ['capped_pair_missing_or_ambiguous']),evidence
+
+
+def body_baseline_at(panel, x):
+    """Locate bar-body connectivity on a skewed scan; the axis stays fixed."""
+    (left, y0), (right, y1) = panel['body_baseline']
+    pl, pt, pr, pb = panel['bounds']
+    if not (pl <= left < right <= pr and pt < y0 < pb and pt < y1 < pb and left <= x <= right):
+        raise ValueError('body_baseline must bracket the bar inside the source panel')
+    return y0 + (y1-y0)*(x-left)/(right-left)
 
 
 def run(path,out):
@@ -218,12 +353,24 @@ def run(path,out):
                     layout_cache[layout_key]=locate_group_slots(mask if body_mask is None else body_mask,panel,layout)
                 slot=layout_cache[layout_key][spec['id']]
                 spec={**spec,'x':slot['x'],'roi':[slot['left'],spec['roi'][1],slot['right'],spec['roi'][3]]}
+            if kind=='bar' and 'body_baseline' in panel:
+                if spec.get('range_expected',True):
+                    raise ValueError('body_baseline is only for bar positions without range stems')
+                zero=body_baseline_at(panel,spec['x'])
             roles,flags,geo=analyze_bar(mask,spec,zero,body_mask) if kind=='bar' else analyze_capped(mask,spec,zero)
+            if kind=='bar' and 'body_baseline' in panel:
+                geo['body_baseline_evidence']={'source_anchors':panel['body_baseline'],'contact_y':zero}
             if body_mask is not None:geo['body_support_preprocessing']={'fill_outline_max_width':width,'range_ink_unchanged':True}
             if slot:geo['slot_location']={**slot,'previous_x':original_spec['x'],'previous_roi':original_spec['roi']}
             cal=axis_fit(panel['axis'])
             if cal['coordinate']!='y':raise ValueError('bar/range values require a y axis')
             geo['candidate_values']={role:[value_at(p,cal) for p in ps] for role,ps in roles.items()}
+            if 'review_roles' in spec:
+                selected = spec['review_roles']
+                if (not isinstance(selected, list) or not selected or len(selected) != len(set(selected))
+                        or any(role not in roles for role in selected)):
+                    raise ValueError('review_roles must be distinct supported object roles')
+                roles = {role: roles[role] for role in selected}
             review['items'].append(item(spec['id'],spec['panel'],spec['identity'],spec['roi'],roles,flags,geo))
             records.append({'id':spec['id'],'kind':kind,**geo})
     return finish(review,overlays,out,records,'bar_stem_cap_geometry')

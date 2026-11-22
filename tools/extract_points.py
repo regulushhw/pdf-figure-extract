@@ -19,7 +19,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fitz  # noqa: E402
 
-from calib import color_key, fit_axis, xy, parse_colormap, match_color  # noqa: E402
+from calib import color_key, xy, parse_colormap, match_color  # noqa: E402
+from review_points import calibrated_axis  # noqa: E402
 
 
 def extract_points(page, frame, color_map, xcal, ycal, legend_rect=None):
@@ -55,13 +56,7 @@ def main():
     d = fitz.open(job['pdf'])
     page = d[job['page'] - 1]
 
-    def mk_axis(spec):
-        if spec.get('scale','linear') != 'linear':
-            raise ValueError('当前自动标定仅支持linear轴')
-        f, inv, ab, resid, chain = fit_axis([tuple(t) for t in spec['ticks']])
-        return {'f': f, 'inv': inv, 'fit': ab, 'resid': resid, 'n': len(chain), 'ticks': chain}
-
-    xcal, ycal = mk_axis(job['x']), mk_axis(job['y'])
+    xcal, ycal = calibrated_axis(job['x'], 'x'), calibrated_axis(job['y'], 'y')
     pts = extract_points(page, job['frame'], job['color_map'], xcal, ycal,
                          legend_rect=job.get('legend_rect'))
     out = {'points': pts,

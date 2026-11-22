@@ -32,17 +32,18 @@ import fitz  # noqa: E402
 from calib import (collect_spans, numeric_spans, color_key, fit_axis,
                    find_frames, far_from_base, page_pixmap_bgr, mark_points,
                    parse_colormap, match_color)  # noqa: E402
+from review_points import calibrated_axis  # noqa: E402
 
 
 def extract_bars(page, color_map, frames=None, names=None, slot_labels=None,
-                 per_group=3, y_side='left', slot_edges=None, equal_spacing=False, tick_window=18, stroke_bars=False):
+                 per_group=3, y_side='left', slot_edges=None, equal_spacing=False, tick_window=18, stroke_bars=False,
+                 y_axis=None):
     if not np.isfinite(tick_window) or tick_window <= 0:
         raise ValueError('tick_window须为正且有限的PDF pt宽度')
     if y_side not in ('left','right'):
         raise ValueError('y_side必须为left或right')
     cmap = parse_colormap(color_map)
-    spans = collect_spans(page)
-    nums = numeric_spans(spans)
+    nums = numeric_spans(collect_spans(page)) if y_axis is None else []
     if frames is None:
         frames = find_frames(page)
     if names is None:
@@ -51,6 +52,8 @@ def extract_bars(page, color_map, frames=None, names=None, slot_labels=None,
 
     if not frames or len(names) != len(frames) or len(set(names)) != len(names):
         raise ValueError('面板为空或名称数量/唯一性不符')
+    if y_axis is not None and len(frames) != 1:
+        raise ValueError('explicit vertical calibration belongs to one bar panel')
     if not slot_labels or len(set(slot_labels)) != len(slot_labels):
         raise ValueError('必须提供不重复的slot_labels')
     if slot_edges is None and not equal_spacing:
@@ -69,7 +72,11 @@ def extract_bars(page, color_map, frames=None, names=None, slot_labels=None,
                 cands.append((cy, v))
             if y_side == 'right' and x1 - 2 <= bb[0] <= x1 + tick_window:
                 cands.append((cy, v))
-        f, inv, ab, resid, chain = fit_axis(cands)
+        if y_axis is None:
+            f, inv, ab, resid, chain = fit_axis(cands)
+        else:
+            calibration = calibrated_axis(y_axis, 'y')
+            f, inv, ab, resid, chain = (calibration[k] for k in ('f', 'inv', 'fit', 'resid', 'ticks'))
         base_pos = inv(0)  # 基线位置
 
         bars = []
@@ -154,7 +161,8 @@ def main():
         page, cmap, frames=job.get('frames'), names=job.get('names'),
         slot_labels=job.get('slot_labels'), per_group=job.get('per_group', 3),
         y_side=job.get('y_side', 'left'), slot_edges=job.get('slot_edges'),
-        equal_spacing=job.get('equal_spacing', False), tick_window=job.get('tick_window',18), stroke_bars=job.get('stroke_bars',False))
+        equal_spacing=job.get('equal_spacing', False), tick_window=job.get('tick_window',18), stroke_bars=job.get('stroke_bars',False),
+        y_axis=job.get('axes', job).get('y'))
     prefix = job.get('prefix', f'p{job["page"]}_bars')
     from calib import record_envelope
     out['_evidence'] = record_envelope(job, [r for panel in out.values() for r in panel['records']],

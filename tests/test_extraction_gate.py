@@ -1,4 +1,5 @@
 import sys
+from io import BytesIO
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -6,15 +7,24 @@ from pathlib import Path
 
 import fitz
 from openpyxl import Workbook
+from openpyxl.drawing.image import Image as WorkbookImage
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from extraction_gate import cell_bindings, check_cards, check_configured_coverage, check_delivery, check_job, inspect_workbook, validate_scope
+from extraction_gate import cell_bindings, check_cards, check_configured_coverage, check_delivery, check_job, compare_current_cells, coverage_report, expand_figure_previews, inspect_workbook, validate_scope
 from review_points import axis_fit
+from extraction_gate import coarse_source_rounding
 from run_task import Runner, changed_previews, sha, write
 
 
 class ExtractionGateTests(unittest.TestCase):
+    def test_source_rounding_uses_coarsest_supported_value(self):
+        self.assertEqual(coarse_source_rounding(2943.38,[2930,2959])['output_value'],2940)
+        self.assertEqual(coarse_source_rounding(2943.38,[2941,2959]),{})
+        self.assertEqual(coarse_source_rounding(2943.38,[2930,3100])['output_value'],2940)
+        with self.assertRaisesRegex(ValueError,'invalid source measurement bounds'):
+            coarse_source_rounding(2943.38,[2950,3100])
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -54,10 +64,60 @@ class ExtractionGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'classify every old worksheet'):
             validate_scope(self.scope, self.pdf)
 
+    def test_coverage_separates_unrun_cells_and_reviewed_gap(self):
+        self.scope['tables']['Fig6-1']['grid'] = {'part': 'first'}
+        self.scope['tables']['Fig6-2']['grid'] = {'part': 'second'}
+        result = {'items': [
+            {'id': 'end', 'identity': {'series': 'observed', 'x': 70}, 'roles': {
+                'value': {'value': None, 'status': 'explicit_missing',
+                          'review': {'missing_evidence': {'kind': 'source_uncovered'}}}}},
+            {'identity': {'series': 'observed', 'x': 71}, 'roles': {
+                'value': {'value': 5, 'status': 'automatic_candidate'}}},
+        ]}
+        report = coverage_report(self.scope, {'first': result}, {})
+        self.assertEqual(report['counts'],
+                         {'source_uncovered': 1, 'numeric_candidate': 1, 'not_extracted': 2})
+        self.assertEqual(report['cells']['Fig6-2!B2']['reference']['x'], 70)
+        self.assertEqual(report['cells']['Fig6-1!B2']['review_target'], {'id': 'end', 'role': 'value'})
+        compare_current_cells(report, self.old)
+        self.assertEqual(report['current_workbook']['changes'], {'existing_number_has_source_gap': 1})
+        self.assertEqual(report['cells']['Fig6-1!B2']['current_value'], 1)
+
+    def test_figure_preview_includes_print_area_but_retains_other_detail_ranges(self):
+        image = BytesIO()
+        Image.new('RGB', (20, 20), 'white').save(image, format='PNG')
+        workbook = Workbook()
+        figure = workbook.active
+        figure.title = "Author's figure"
+        figure.add_image(WorkbookImage(image), 'H5')
+        figure.print_area = 'A1:M20'
+        workbook.create_sheet('Data')
+        target = self.root / 'preview.xlsx'
+        workbook.save(target)
+        workbook.close()
+        views = [{'sheet': figure.title, 'range': 'A1:E8'},
+                 {'sheet': figure.title, 'range': 'H5:J9'},
+                 {'sheet': 'Data', 'range': 'A1:E8'}]
+        expand_figure_previews({'target': target, 'previews': views})
+        self.assertEqual([view['range'] for view in views], ['A1:M20', 'H5:J9', 'A1:E8'])
+
     def test_matching_but_shortened_old_and_new_ranges_fail(self):
         for tables in (self.scope['baseline']['tables'], self.scope['tables']):
             tables['Fig6-1'].update(range='B2:B2', columns=[70])
         with self.assertRaisesRegex(ValueError, 'Fig6-1: old workbook cells outside frozen baseline: C1, C2'):
+            validate_scope(self.scope, self.pdf)
+
+    def test_review_regions_can_share_sheet_without_overlapping(self):
+        self.scope['baseline'] = None
+        self.scope['no_previous_workbook_reason'] = 'Scoped correction draft'
+        second = self.scope['tables']['Fig6-2']
+        second.update(sheet='Fig6-1', range='D2:E2')
+        with self.assertRaisesRegex(ValueError, 'preserve separate sheets'):
+            validate_scope(self.scope, self.pdf)
+        self.scope['review_regions'] = True
+        validate_scope(self.scope, self.pdf)
+        second['range'] = 'C2:D2'
+        with self.assertRaisesRegex(ValueError, 'cannot overlap'):
             validate_scope(self.scope, self.pdf)
 
     def test_caption_absent_from_old_workbook_still_must_be_in_inventory(self):
@@ -159,10 +219,18 @@ class ExtractionGateTests(unittest.TestCase):
         draft = self.root / 'draft.xlsx'
         self.workbook(draft, last='—')
         check_delivery(self.scope, draft, evidence, {'p': result})
+        for index in (1,3):
+            result['items'][index]['roles']['value']['review']['missing_evidence'] = dict(receipt)
+        check_delivery(self.scope, draft, {}, {'p': result})
+        with self.assertRaisesRegex(ValueError, 'conflicting source gap evidence'):
+            check_delivery(self.scope,draft,{'missing':{'Fig6-1!C2':{**receipt,'reason':'different'}}},
+                           {'p':result})
         result['items'][0]['roles']['value']['value'] = 2
         with self.assertRaisesRegex(ValueError, 'Fig6-1!B2: workbook value'):
             check_delivery(self.scope, draft, evidence, {'p': result})
         result['items'][0]['roles']['value']['value'] = 1
+        for index in (1,3):
+            del result['items'][index]['roles']['value']['review']['missing_evidence']
         receipt['bbox'] = [20, 20, 22, 22]
         with self.assertRaisesRegex(ValueError, 'missing evidence must match'):
             check_delivery(self.scope, draft, evidence, {'p': result})
@@ -200,6 +268,27 @@ class ExtractionGateTests(unittest.TestCase):
         card['axes']['x']['check_ticks'] = [[13, 10]]
         with self.assertRaisesRegex(ValueError, 'independent tick residual'):
             check_job(card, job, 'vector_window_stats')
+
+    def test_mixed_printed_and_geometry_cells_share_one_frozen_table(self):
+        with fitz.open() as doc:
+            page = doc.new_page()
+            page.insert_text((40, 50), '1')
+            box = list(page.search_for('1')[0])
+            doc.save(self.pdf)
+        self.scope['pdf_sha256'] = sha(self.pdf)
+        self.scope['cards'] = {'p': {'source': 'Fig6'}}
+        for index, table in enumerate(self.scope['tables'].values()):
+            table['printed'] = {'B2': {'text':'1','mode':'text','bbox':box}}
+            table['points'] = {'C2': {'part':'p','id':f'point-{index}'}}
+        printed = validate_scope(self.scope,self.pdf)
+        results = {'p': {'_evidence': {'records': [
+            {'id':f'point-{index}','value':2,'pdf_xy':[70,50]} for index in range(2)]}}}
+        check_delivery(self.scope,self.old,{},results=results,printed=printed)
+        report=coverage_report(self.scope,results,printed)
+        self.assertEqual(report['counts'],{'numeric_candidate':2,'printed_source':2})
+        self.scope['tables']['Fig6-1']['points']['B2']={'part':'p','id':'collision'}
+        with self.assertRaisesRegex(ValueError,'partition'):
+            validate_scope(self.scope,self.pdf)
 
     def test_axis_fit_rejects_duplicate_values_at_distinct_positions(self):
         for kind, values in (('linear', [1, 1, 21]), ('log10', [1, 1, 100])):

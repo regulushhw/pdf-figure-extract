@@ -92,6 +92,7 @@ class WorkbookSaveTests(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get('FIGURE_SAVE_INTEGRATION')=='1','requires configured Node/artifact runtime and PowerShell')
     def test_full_shared_pipeline_preserves_native_image_without_copied_scripts(self):
+        self.plan['number_formats']=[{'sheet':'Data','range':'A1','decimals':0}]
         node=os.environ.get('FIGURE_NODE') or shutil.which('node')
         shell=shutil.which('pwsh') or shutil.which('powershell')
         self.assertTrue(node and shell,'integration explicitly requested but runtime is missing')
@@ -107,7 +108,7 @@ class WorkbookSaveTests(unittest.TestCase):
         saved=openpyxl.load_workbook(self.source,data_only=False)
         self.assertEqual(saved['Data']['A1'].value,3)
         self.assertEqual(saved['Data']['B1'].value,2)
-        self.assertEqual(saved['Data']['A1'].number_format,'0.00')
+        self.assertEqual(saved['Data']['A1'].number_format,'0')
         self.assertEqual(saved.sheetnames,['Data','Formats'])
         self.assertEqual(len(saved['Data']._images),1)
         result=json.loads((self.root/'续补保存检查.json').read_text(encoding='utf-8'))['1']

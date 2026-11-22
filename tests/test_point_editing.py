@@ -9,9 +9,23 @@ from PIL import Image,ImageDraw
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
 from run_task import Runner,read,write,sha
+from review_points import axis_fit, interpolation_basis, pixel_measurement
 
 
 class PointTests(unittest.TestCase):
+    def test_bitmap_precision_uses_pixel_edges_and_rejects_stale_bounds(self):
+        calibration = axis_fit({'coordinate': 'y', 'unit': '%',
+                                'ticks': [[0, 0], [100, 10]], 'check_ticks': [[51, 5]],
+                                'max_residual_px': 2})
+        evidence = {'selected': [20, 50], 'observed_ink_y_bounds': [49, 51]}
+        item = {'complex_evidence': evidence}
+        result = pixel_measurement(item, 'value', [20, 50], calibration)
+        self.assertAlmostEqual(result['value_bounds'][0], 4.75)
+        self.assertAlmostEqual(result['value_bounds'][1], 5.25)
+        self.assertIsNone(pixel_measurement(item, 'value', [20, 51], calibration))
+        evidence['interpolation_bracket'] = [[19, 50], [21, 50]]
+        self.assertIsNone(pixel_measurement(item, 'value', [20, 50], calibration))
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name)
@@ -67,6 +81,23 @@ class PointTests(unittest.TestCase):
         with Image.open(r['images'][0]) as image:
             self.assertLess(image.width,1500)
 
+    def test_interpolation_evidence_belongs_to_the_original_point_only(self):
+        item={'complex_evidence':{'selected':[20,40],
+                                  'interpolation_bracket':[[18,38],[22,42]]}}
+        self.assertEqual(interpolation_basis(item,'value',[20,40]),
+                         {'kind':'local_interpolation','bracket_px':[[18,38],[22,42]]})
+        self.assertIsNone(interpolation_basis(item,'value',[20,41]))
+        item['complex_evidence']['interpolation_bracket'][1]=[22,44]
+        with self.assertRaisesRegex(ValueError,'source bracket'):
+            interpolation_basis(item,'value',[20,40])
+
+    def test_choose_candidate_uses_original_position_and_rejects_unknown_index(self):
+        shown=self.inspect(('p0',))
+        self.assertFalse(self.edit(shown,[{'op':'choose_candidate','id':'p0','candidate_index':5}])['ok'])
+        reply=self.edit(shown,[{'op':'choose_candidate','id':'p0','candidate_index':0}])
+        self.assertTrue(reply['ok'],reply)
+        self.assertEqual(self.result()['items'][0]['roles']['value']['pixel'],[20,40.5])
+
     def test_new_point_reassign_delete_and_resume(self):
         r=self.edit(self.inspect(),[{'op':'add','id':'extra','panel':'p','identity':{'series':'new'},'pixel':[30,45]}])
         self.assertTrue(r['ok'],r)
@@ -79,6 +110,14 @@ class PointTests(unittest.TestCase):
         r=self.edit(self.inspect(),[{'op':'delete','id':'p0'}]);self.assertTrue(r['ok'],r)
         self.assertEqual(len(self.result()['items']),3)
         self.assertFalse(self.attest('accept')['ok'])
+
+    def test_reviewed_source_gap_records_original_source_and_visible_bounds(self):
+        view=self.inspect(('p2',))
+        reply=self.edit(view,[{'op':'delete','id':'p2','missing_kind':'source_uncovered'}])
+        self.assertTrue(reply['ok'],reply)
+        basis=self.result()['items'][2]['roles']['value']['review']['missing_evidence']
+        self.assertEqual(basis['sha256'],sha(self.root/'source.png'))
+        self.assertEqual(basis['bbox'],view['views'][0]['bounds'])
 
     def test_undo_restores_before_batch_and_preview(self):
         v=self.inspect();r=self.edit(v,[{'op':'move','id':'p0','pixel':[22,45]}]);self.assertTrue(r['ok'],r)
