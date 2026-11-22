@@ -13,7 +13,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 from extraction_gate import cell_bindings, check_cards, check_configured_coverage, check_delivery, check_job, compare_current_cells, coverage_report, expand_figure_previews, inspect_workbook, validate_scope
 from review_points import axis_fit
-from extraction_gate import bound_readings, coarse_source_rounding, prefer_printed
+from extraction_gate import bound_readings, coarse_source_rounding, matching_readings, prefer_printed, reading_indexes
 from run_task import Runner, changed_previews, sha, write
 
 
@@ -376,6 +376,14 @@ class ExtractionGateTests(unittest.TestCase):
         x['check_ticks'] = [[22, 'Apr']]
         with self.assertRaisesRegex(ValueError, 'independent printed label'):
             check_job(card, job, 'manual_points')
+
+    def test_bitmap_trace_binding_uses_source_pixel_when_data_x_is_absent(self):
+        rows = [{'id': 'trace-1675', 'identity': {'series': 's', 'source_pixel_x': 1675}},
+                {'id': 'manual', 'identity': {'series': 's', 'x': 8, 'source_pixel_x': 1675}}]
+        idx = reading_indexes({'p': {'items': rows}})['p']
+        self.assertEqual(matching_readings(idx, {'id': 'trace-1675', 'series': 's', 'x': 1675}), [0])
+        self.assertEqual(matching_readings(idx, {'series': 's', 'x': 1675}), [0])
+        self.assertEqual(matching_readings(idx, {'series': 's', 'x': 8}), [1])
 
     def test_boxplot_category_allows_offset_but_rejects_adjacent_slot(self):
         x = {'kind': 'category', 'ticks': [[100, 'spring'], [200, 'summer']],

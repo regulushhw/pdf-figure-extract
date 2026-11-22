@@ -634,6 +634,13 @@ def printed_readings(scope, pdf):
     return result
 
 
+def reading_identity(row, field):
+    identity = row.get('identity', {})
+    if field == 'x':
+        return row.get('x', identity.get('x', identity.get('source_pixel_x')))
+    return row.get(field, identity.get(field))
+
+
 def reading_indexes(results):
     indexes = {}
     for part, result in results.items():
@@ -642,8 +649,7 @@ def reading_indexes(results):
         for index, row in enumerate(rows):
             if 'id' in row:
                 by_id[row['id']].append(index)
-            identity = row.get('identity', {})
-            series, x = (row.get(k, identity.get(k)) for k in ('series', 'x'))
+            series, x = (reading_identity(row, k) for k in ('series', 'x'))
             if isinstance(series, str) and type(x) in (str, int, float):
                 by_series_x[series, x].append(index)
         indexes[part] = (rows, by_id, by_series_x)
@@ -653,8 +659,7 @@ def reading_indexes(results):
 def matching_readings(index, selector):
     rows, by_id, by_series_x = index
     candidates = by_id[selector['id']] if 'id' in selector else by_series_x[selector['series'], selector['x']]
-    return [i for i in candidates if all(
-        rows[i].get(k, rows[i].get('identity', {}).get(k)) == v for k, v in selector.items())]
+    return [i for i in candidates if all(reading_identity(rows[i], k) == v for k, v in selector.items())]
 
 
 def coverage_report(scope, results, printed):
