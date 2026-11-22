@@ -68,7 +68,7 @@ class PrepareTests(unittest.TestCase):
         Image.new('RGB', (80, 80), 'white').save(raster, format='PNG')
         with fitz.open() as doc:
             page = doc.new_page(width=400, height=400)
-            page.insert_image((20, 40, 150, 160), stream=raster.getvalue())
+            page.insert_image((20, 40, 150, 160), stream=raster.getvalue(), keep_proportion=False)
             page.draw_rect((20, 40, 150, 160))
             page.draw_line((180, 60), (360, 130))
             page.draw_line((20, 90), (150, 90))  # reference rule
