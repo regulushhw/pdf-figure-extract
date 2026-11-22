@@ -13,7 +13,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 from extraction_gate import cell_bindings, check_cards, check_configured_coverage, check_delivery, check_job, compare_current_cells, coverage_report, expand_figure_previews, inspect_workbook, validate_scope
 from review_points import axis_fit
-from extraction_gate import coarse_source_rounding
+from extraction_gate import bound_readings, coarse_source_rounding, prefer_printed
 from run_task import Runner, changed_previews, sha, write
 
 
@@ -289,6 +289,18 @@ class ExtractionGateTests(unittest.TestCase):
         self.scope['tables']['Fig6-1']['points']['B2']={'part':'p','id':'collision'}
         with self.assertRaisesRegex(ValueError,'partition'):
             validate_scope(self.scope,self.pdf)
+        self.scope['tables']['Fig6-1']['compare_printed_geometry'] = True
+        printed = validate_scope(self.scope, self.pdf)
+        results['p']['_evidence']['records'].append({'id': 'collision', 'value': 4, 'pdf_xy': [60, 51]})
+        resolved = prefer_printed(bound_readings(self.scope, results, {}), printed)
+        key = f"{self.scope['tables']['Fig6-1']['sheet']}!B2"
+        self.assertEqual(resolved[key]['value'], 1)
+        self.assertEqual(resolved[key]['printed_minus_geometry'], -3)
+        self.assertEqual(resolved[key]['geometry_comparison']['source_location'], {'pdf_xy': [60, 51]})
+        report = coverage_report(self.scope, results, printed)
+        self.assertEqual(report['cells'][key]['printed_minus_geometry'], -3)
+        self.assertEqual(report['cells'][key]['geometry_comparison']['status'], 'numeric_candidate')
+        check_delivery(self.scope, self.old, {}, results=results, printed=printed)
 
     def test_axis_fit_rejects_duplicate_values_at_distinct_positions(self):
         for kind, values in (('linear', [1, 1, 21]), ('log10', [1, 1, 100])):

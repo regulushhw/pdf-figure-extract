@@ -128,6 +128,8 @@ objects用ROI内连续墨迹和当前候选收紧纵向空白，裁剪仅是显�
 
 版本 2 的 `draft` 从已核验的 `printed` 和已确认的读图绑定生成数值写入块。同一工作表内连续列归为一块。声明小数位时按该位数写入和显示，只调整绑定数字的显示格式，并逐格验证。明确缺值沿用现有证据关卡。计划仍需声明目标簿、备份、预览及检查文件；`changes` 可只写补充的排版文字。手填写入若与绑定读数或缺值相冲突，生成草稿前即报错。
 
+原文与图确实对应同一格、且需要保留两者差异时，在表配置设置 `"compare_printed_geometry": true`，将该格同时绑定到 `printed` 与 `points`。覆盖报告显示图值状态和差额。草稿写入可核验的原文数值，在 `bound_readings.json` 同格保留图读值、原图点位及原文减图读值的差额。两份证据必须对应同一统计量、口径和单位。
+
 固定方法名：`vector_bars`、`vector_lines`、`vector_points`、`vector_dashes`、`bitmap_points`、`bitmap_lines` 和 `vector_window_stats`。各方法支持范围以其实际说明为准，不能改名套用；例如 [WPD核心入口](wpd_core.md)支持线性和log10轴，[时间窗统计](vector_windows.md)有自己的轴和覆盖要求。返回unsupported/incomplete时修配置、选择已有适用方法或转维护，不能删除系列让检查通过。
 
 试验方法新增`bitmap_bar_ranges`（柱体/横帽/竖线配对）与`bitmap_curve_identity`（线宽、斜率和有界断口多假设）。都输出原复核契约，详见[复杂图元模块](complex_geometry.md)；不表示已支持任意虚线或自动完成图义判断。

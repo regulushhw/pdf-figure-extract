@@ -507,7 +507,7 @@ class Runner:
         evidence = {}
         readings = None
         if self.scope is not None:
-            from extraction_gate import bound_readings, expand_figure_previews
+            from extraction_gate import bound_readings, expand_figure_previews, prefer_printed
             evidence = read(evidence_path) if evidence_path.exists() else {}
             results = {}
             for part in self.parts:
@@ -521,7 +521,7 @@ class Runner:
                     self.bind_vector_gaps(record, data, approval.get('vector_gaps', []))
                     results[part['id']] = data
             missing = evidence.setdefault('missing', {})
-            readings = {**bound_readings(self.scope, results, missing), **self.printed}
+            readings = prefer_printed(bound_readings(self.scope, results, missing), self.printed)
             add_bound_changes(plan, readings)
             expand_figure_previews(plan)
             revision = digest({'plan': plan, 'contracts': contracts,
