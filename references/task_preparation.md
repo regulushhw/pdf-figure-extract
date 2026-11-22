@@ -63,6 +63,8 @@ python tools/prepare_task.py route <package> --page 11 --bounds 80 110 510 370
 
 与面板或同一嵌入位图边缘吻合的单个描边矩形单独列在 `matching_frame_paths`。单独的水平或竖直路径列在 `axis_aligned_paths`，只剩这类路径时返回 `axis_aligned_check_identity`，依据原图确认它属于坐标轴、基准线还是数据。
 
+先于位图绘制、完整包住该位图的纯白无描边矩形列在 `bitmap_backdrop_paths`。后绘制的路径、局部遮罩和其他矢量对象仍参与混合面板判断。
+
 准备曲线或点图任务时，可用 `configure <package> --part ID --method auto --bounds X0 Y0 X1 Y1` 选择首轮模板，并把面板选路证据写入配置。明确的矢量面板载入矢量折线模板，单一原生位图载入位图候选模板。混合对象、系列身份未定或准备包缺少对应原生位图时，命令会给出原因。后续仍需填写轴、系列和采样范围。编译任务会重查来源，并在编译后的 `scope.json` 留下选路证据。
 
 模板的 `x_kind`、`y_kind` 接受 `linear` 或 `log10`，用 `x_check_ticks`、`y_check_ticks` 填写独立回查刻度。编译时将这些字段连同单位传入读数器，位图模板按轴类型把采样值换算回原图像素列。

@@ -564,13 +564,20 @@ def route_panel(root, page_number, bounds):
         # with a footprint in both dimensions count as vector evidence here.
         vectors = []
         frames = []
+        backdrops = []
         axis_aligned = []
+        image_paints = [(seq, fitz.Rect(box)) for seq, (kind, box) in enumerate(page.get_bboxlog())
+                        if kind == 'fill-image' and any(fitz.Rect(box) == image for image in image_boxes)]
         for drawing in page.get_drawings():
             rect = drawing['rect']
             overlap = rect & panel
             if not overlap.is_empty:
                 item = {'intersection_pt': list(overlap), 'segments': len(drawing['items'])}
-                if (drawing['type'] == 's' and len(drawing['items']) == 1
+                rectangle = len(drawing['items']) == 1 and drawing['items'][0][0] == 're'
+                if (rectangle and drawing['type'] == 'f' and drawing.get('fill') == (1., 1., 1.)
+                        and any(drawing['seqno'] < seq and rect.contains(box) for seq, box in image_paints)):
+                    backdrops.append(item)
+                elif (drawing['type'] == 's' and rectangle
                         and drawing['items'][0][0] == 're'
                         and any(all(abs(a-b) <= .75 for a,b in zip(rect, box))
                                 for box in (panel, *image_boxes))):
@@ -598,6 +605,7 @@ def route_panel(root, page_number, bounds):
         return {'ok': True, 'page': page_number, 'bounds_pt': bounds, 'geometry': geometry,
                 'source_priority': ['verified_published_data', 'panel_geometry'],
                 'images': images, 'vector_paths': vectors, 'matching_frame_paths': frames,
+                'bitmap_backdrop_paths': backdrops,
                 'axis_aligned_paths': axis_aligned}
 
 
