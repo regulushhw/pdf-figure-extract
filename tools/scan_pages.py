@@ -22,7 +22,7 @@ import fitz
 from calib import collect_spans, numeric_spans, color_key
 
 CAPTION = re.compile(r'^\s*(Figure|Fig\.?|Table|图|表)\s*([0-9]+[a-z]?|[IVXLCDM]+)'
-                     r'(?:\s*[.:：](?:\s|$)|\s*$)', re.I)
+                     r'(?:\s*[.:：](?:\s|$)|[\u2002\u2003]\s+\S|\s*$)', re.I)
 
 
 def caption_matches(blocks):

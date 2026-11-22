@@ -53,6 +53,8 @@ prepare_seconds、operation_seconds分别是准备/当前动作时间；computer
 验证：`python -X utf8 -B tests/test_prepare_task.py`。合成PDF/图片验证准备、规则图注、模板、真实提取入口、旧任务导入、缓存及输入变更；不证明任意论文的图义或取值准确。
 ## 面板来源判定
 
+冻结清单中已标为 `transcribe` 的项目可直接执行 `configure <package> --part ID --method auto`，无需提供图框。命令按页码、图表类型和印刷编号匹配来源，重新核验已绑定的 PDF 数字并报告格数。`build` 在编译范围的 `printed_sources` 留下直接来源及目标表。仍需取图值的项目继续使用面板选路。
+
 准备任务后，用 PDF 页码与面板在 PDF 页上的矩形坐标查询该区域：
 
 ```text

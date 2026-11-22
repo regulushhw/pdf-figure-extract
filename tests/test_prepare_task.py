@@ -13,9 +13,45 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 from prepare_task import prepare, build, trial, status, configure, read, write, sha, route_panel, printed_grid
+from scan_pages import caption_matches
 
 
 class PrepareTests(unittest.TestCase):
+    def test_caption_with_typographic_separator_is_discovered(self):
+        def block(text):
+            return (0, 0, 100, 20, text)
+        found = list(caption_matches([block('Table\u202f2\u2002 \u2009Model calibration'),
+                                      block('Table 2 shows the calibration results.')]))
+        self.assertEqual([(item['kind'], item['label']) for item in found], [('table', '2')])
+
+    def test_auto_prefers_verified_printed_binding_before_geometry(self):
+        path = self.root / 'direct.pdf'
+        with fitz.open() as doc:
+            page = doc.new_page()
+            page.insert_text((40, 50), 'Table 1. Reported value')
+            page.insert_text((40, 85), '42')
+            box = list(page.search_for('42')[0])
+            doc.save(path)
+        prepare(path, self.out)
+        decisions = read(self.out / 'decisions.json')
+        part_id = decisions['parts'][0]['id']
+        decisions['gate'] = 'printed-scope.json'
+        write(self.out / 'decisions.json', decisions)
+        scope = {'pdf_sha256': sha(path), 'pages_reviewed': [1],
+                 'inventory': {'t': {'kind': 'table', 'label': '1', 'page': 1,
+                                     'action': 'transcribe', 'tables': ['t']}},
+                 'tables': {'t': {'sheet': 'table', 'range': 'B2:B2', 'columns': ['x'], 'rows': ['s'],
+                                  'printed': {'B2': {'mode': 'text', 'text': '42', 'bbox': box}}}},
+                 'cards': {}, 'baseline': None, 'no_previous_workbook_reason': 'New fixture.'}
+        write(self.out / 'printed-scope.json', scope)
+        selection = configure(self.out, part_id, 'auto')
+        self.assertEqual((selection['method'], selection['verified_cells']), ('printed_source', 1))
+        self.assertEqual(read(self.out / 'decisions.json')['parts'][0]['action'], 'pending')
+        scope['tables']['t']['printed']['B2']['text'] = '43'
+        write(self.out / 'printed-scope.json', scope)
+        with self.assertRaisesRegex(ValueError, 'printed token differs'):
+            configure(self.out, part_id, 'auto')
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

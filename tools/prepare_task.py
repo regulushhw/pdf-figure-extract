@@ -256,7 +256,7 @@ def compact_job(part, pdf, page, base):
 
 def configure(root, part_id, method=None, bounds=None):
     """Select an imported job, or fill an empty part from a bounded template."""
-    root, _ = check_package(root)
+    root, package = check_package(root)
     decisions = read(root / 'decisions.json')
     part = next(p for p in decisions['parts'] if p['id'] == part_id)
     if method:
@@ -267,6 +267,21 @@ def configure(root, part_id, method=None, bounds=None):
         page = next(p for p in inv['pages'] if p['page'] == c['page'])
         selection = None
         if method == 'auto':
+            if decisions.get('gate'):
+                from extraction_gate import validate_scope
+                scope = read(absolute(decisions['gate'], root))
+                entries = [entry for entry in scope['inventory'].values()
+                           if (entry['page'], entry['kind'], str(entry.get('label', '')).casefold()) ==
+                           (c['page'], c['kind'], str(c['label']).casefold())]
+                if len(entries) == 1 and entries[0]['action'] == 'transcribe':
+                    verified = validate_scope(scope, package['pdf'])
+                    names = {scope['tables'][key]['sheet'] for key in entries[0]['tables']}
+                    count = sum(key.rsplit('!', 1)[0] in names for key in verified)
+                    if not count:
+                        raise ValueError('direct source has no verified numeric bindings')
+                    return {'ok': True, 'part': part_id, 'method': 'printed_source',
+                            'verified_cells': count, 'source_page': c['page'],
+                            'next': 'Build the workbook using the frozen printed bindings.'}
             if c['kind'] == 'table':
                 raise ValueError('printed tables use printed-grid and verified printed bindings')
             selection = route_panel(root, c['page'], bounds)
@@ -393,11 +408,22 @@ def build(root, require_gate=False):
                       'trial_job': f'{pid}_trial.json', 'scope': part['scope']})
     gate = None
     printed = {}
+    printed_sources = {}
     if 'gate' in decisions:
         from extraction_gate import check_cards, check_configured_coverage, check_job, validate_scope
         gate_path = absolute(decisions['gate'], root)
         scope = read(gate_path)
         printed = validate_scope(scope, package['pdf'])
+        printed_sources = {source_id: {'page': entry['page'], 'kind': entry['kind'],
+                                      'label': entry.get('label'), 'tables': entry['tables']}
+                           for source_id, entry in scope['inventory'].items()
+                           if entry['action'] == 'transcribe'}
+        source_keys = {(r['page'], r['kind'], str(r['label']).casefold())
+                       for r in printed_sources.values() if r['label'] is not None}
+        completed_candidates = {c['id'] for c in candidates.values()
+                                if (c['page'], c['kind'], str(c['label']).casefold()) in source_keys}
+        covered_pending = {p['id'] for p in decisions['parts'] if p.get('candidate_id') in completed_candidates}
+        pending = [p for p in pending if p['id'] not in covered_pending]
         check_cards(scope, parts, allow_subset=not workbook)
         for part in parts:
             card = scope['cards'][part['id']]
@@ -441,6 +467,7 @@ def build(root, require_gate=False):
         if workbook: task['workbook'] = workbook
         write(folder / 'task.json', task)
         write(folder / 'scope.json', {'selected': [p['id'] for p in parts], 'remaining': pending,
+              'printed_sources': printed_sources,
               'method_selections': method_selections,
               'warning': 'Compiled scope is not whole-paper completion; pending candidates remain visible.'})
         write(folder / 'build.json', {'files': {str(p): sha(p) for p in folder.iterdir() if p.is_file()}})
