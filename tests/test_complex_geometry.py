@@ -77,6 +77,18 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(result['selected'], [50, 41.5])
         self.assertEqual(result['interpolation_bracket'], [[36, 41.5], [72, 41.5]])
         self.assertIn('local_dash_interpolation_review', result['flags'])
+        retry = {**spec, 'max_component_span_px': 28,
+                 'style': {**spec['style'], 'max_gap_px': 30}}
+        self.assertEqual(track(mask, retry)['status'], 'disconnected')
+        recovered = track(mask, {**retry, 'retry_measured_dash_gap': True})
+        self.assertEqual(recovered['dash_gap_retry']['measured_gap_px'], 35)
+        self.assertEqual(recovered['samples'][0]['interpolation_bracket'], result['interpolation_bracket'])
+
+        mask[77:91, 40:66] = True
+        retry.update(roi=[5, 25, 110, 95], max_step_px=1, retry_measured_dash_gap=True)
+        recovered = track(mask, retry)
+        self.assertEqual(recovered['dash_gap_retry']['measured_gap_px'], 35)
+        self.assertEqual(recovered['samples'][0]['interpolation_bracket'], result['interpolation_bracket'])
 
     def test_positive_bar_tip_separate_from_stem_endpoints(self):
         mask,_=self.mask();roles,flags,evidence=analyze_bar(mask,self.spec(),90)
@@ -294,6 +306,27 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(gap['selected'],[18,40])
         self.assertIn('local_dash_interpolation_review',gap['flags'])
         self.assertTrue(gap['interpolation_bracket'])
+
+        spec.pop('dash_fragment_span_px')
+        spec['dash_fragment_reference_px'] = [13, 40]
+        measured = track(mask, spec)
+        self.assertEqual(measured['dash_fragment_reference'],
+                         {'point_px': [13, 40], 'span_px': 6})
+        self.assertEqual(measured['samples'], result['samples'])
+        self.assertEqual(measured['dash_fragment_path'], result['dash_fragment_path'])
+
+        spec['dash_fragment_reference_px'] = [[13, 40], [25, 40]]
+        measured = track(mask, spec)
+        self.assertEqual(measured['dash_fragment_reference']['measured_spans_px'], [6, 6])
+        self.assertEqual(measured['samples'], result['samples'])
+
+        mixed_reference = {**spec, 'dash_fragment_reference_px': [[13, 40], [25, 44]]}
+        with self.assertRaisesRegex(ValueError, 'reference spans disagree'):
+            track(mask, mixed_reference)
+
+        spec['roi'] = [10, 1, 108, 108]
+        with self.assertRaisesRegex(ValueError, 'reference component is clipped'):
+            track(mask, spec)
 
     def test_auto_anchors_keep_uncovered_positions_on_native_large_mask(self):
         mask=np.zeros((700,900),dtype=bool)
