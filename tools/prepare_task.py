@@ -635,8 +635,14 @@ def route_panel(root, page_number, bounds):
             geometry = 'axis_aligned_check_identity'
         else:
             geometry = 'no_geometry_found'
+        printed_percent_labels = []
+        for x0, y0, x1, y1, text, *_ in page.get_text('words', clip=panel, sort=True):
+            token = printed_token(text)
+            if token.endswith('%') and PRINTED_NUMBER.fullmatch(token):
+                printed_percent_labels.append({'text': text, 'bbox_pt': [x0, y0, x1, y1]})
         return {'ok': True, 'page': page_number, 'bounds_pt': bounds, 'geometry': geometry,
                 'source_priority': ['verified_published_data', 'panel_geometry'],
+                'printed_percent_labels': printed_percent_labels,
                 'images': images, 'vector_paths': vectors, 'matching_frame_paths': frames,
                 'bitmap_backdrop_paths': backdrops,
                 'axis_aligned_paths': axis_aligned}

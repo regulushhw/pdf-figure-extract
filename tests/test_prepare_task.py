@@ -110,6 +110,8 @@ class PrepareTests(unittest.TestCase):
             page.draw_line((180, 60), (360, 130))
             page.draw_line((20, 90), (150, 90))  # reference rule
             page.draw_line((20, 250), (150, 250))  # unclassified flat mark
+            page.insert_text((35, 65), '23%')
+            page.insert_text((300, 65), '99%')
             path = self.root / 'mixed.pdf'
             doc.save(path)
         prepare(path, self.out)
@@ -120,6 +122,9 @@ class PrepareTests(unittest.TestCase):
         self.assertLess(bitmap['bitmap_backdrop_paths'][0]['paint_order'],
                         min(bitmap['images'][0]['paint_order_candidates']))
         self.assertEqual(bitmap['axis_aligned_paths'], [[20, 90, 150, 90]])
+        self.assertEqual([row['text'] for row in bitmap['printed_percent_labels']], ['23%'])
+        self.assertTrue(fitz.Rect(18, 35, 155, 170).contains(
+            fitz.Rect(bitmap['printed_percent_labels'][0]['bbox_pt'])))
         self.assertEqual(route_panel(self.out, 1, [175, 40, 380, 160])['geometry'],
                          'vector_first')
         self.assertEqual(route_panel(self.out, 1, [10, 30, 390, 170])['geometry'],
