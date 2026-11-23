@@ -529,8 +529,17 @@ def run(path,out):
             flags=sample['flags']
             # A measured-looking alternative must not fill the selected gap.
             options=sample['candidates'] if sample['selected'] or sample.get('fragment_candidates') else []
-            review['items'].append(item(f'{spec["id"]}-{sample["x"]}',spec['panel'],
-                {**spec['identity'],'source_pixel_x':sample['x']},spec['roi'],{'value':options},flags,sample))
+            evidence = dict(sample)
+            if sample['selected'] is None and result.get('failed_at') is not None:
+                evidence['trace_failed_at_x'] = result['failed_at']
+            card = item(f'{spec["id"]}-{sample["x"]}',spec['panel'],
+                {**spec['identity'],'source_pixel_x':sample['x']},spec['roi'],{'value':options},flags,evidence)
+            card['anchor'][0] = sample['x']
+            if 'trace_failed_at_x' in evidence and spec.get('anchors'):
+                # Center the review crop near the anchor corridor without proposing a value.
+                anchor_x, anchor_y = zip(*spec['anchors'])
+                card['anchor'][1] = float(np.interp(sample['x'], anchor_x, anchor_y))
+            review['items'].append(card)
     return finish(review,overlays,out,records,'width_slope_multihypothesis_curves')
 
 
