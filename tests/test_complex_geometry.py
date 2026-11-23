@@ -30,6 +30,44 @@ class GeometryTests(unittest.TestCase):
 
     def spec(self):return {'id':'bar','panel':'p','identity':{'series':'s'},'roi':[35,10,55,130],'x':45}
 
+    def test_short_bar_requires_ink_beyond_visible_zero_line(self):
+        from complex_bars import short_bar_candidates
+        gray = np.full((60, 70), 255, dtype=np.uint8)
+        gray[29:31, 5:65] = 0
+        gray[31:34, 30:41] = 0
+        gray[24:38, 35] = 0
+        args = ([27, 10, 43, 50], 35, 30, [5, 10, 64, 50])
+        result = short_bar_candidates(gray, *args)
+        self.assertEqual(result, [{'xy': [35, 33], 'zero_line_edge_y': 30,
+                                   'bilateral_support_rows': [31, 32, 33]}])
+        gray[31:34, 30:41] = 255
+        self.assertEqual(short_bar_candidates(gray, *args), [])
+
+    def test_gray_bar_tip_review_keeps_pixel_evidence_and_ignores_range_flags(self):
+        image = self.root/'gray_bar.png'
+        im = Image.new('RGB', (130, 140), 'white')
+        draw = ImageDraw.Draw(im)
+        draw.rectangle((40, 60, 50, 90), fill=(200,)*3)
+        draw.line((40, 60, 50, 60), fill='black')
+        draw.line((45, 40, 45, 110), fill='black')
+        draw.line((41, 40, 49, 40), fill='black')
+        draw.line((10, 65, 110, 65), fill='black')
+        im.save(image)
+        job = self.root/'gray_bar.json'
+        write(job, {
+            'sources': {'s': {'image': str(image)}},
+            'panels': {'p': {'source': 's', 'bounds': [10, 10, 110, 130], 'zero_y': 90,
+                             'axis': {'coordinate': 'y', 'ticks': [[10, 80], [130, -40]], 'unit': '%'}}},
+            'bars': [{**self.spec(), 'review_roles': ['bar_tip'],
+                      'edge_candidate_plot_box': [10, 10, 110, 130]}],
+        })
+        bar_run(job, self.root/'gray_review')
+        result = read(self.root/'gray_review/review_job.json')['items'][0]
+        self.assertEqual(result['roles'], {'bar_tip': [[45, 60]]})
+        self.assertEqual(result['complex_evidence']['bitmap_edge_candidates'][0]['xy'], [45, 60])
+        self.assertIn('bitmap_edge_candidate_requires_review', result['flags'])
+        self.assertFalse(any('uncapped' in flag or 'range_stem' in flag for flag in result['flags']))
+
     def test_boxplot_requires_connected_whiskers(self):
         mask = np.zeros((75, 55), dtype=bool)
         mask[[20, 30, 41], 15:36] = True
@@ -501,6 +539,16 @@ class GeometryTests(unittest.TestCase):
              'traces':[{**spec,'id':'d','panel':'p','identity':{'series':'d'},'selector':{'mode':'gray','range':[0,80]}}]}
         write(self.root/'curve.json',job);summary=curve_run(self.root/'curve.json',self.root/'result')
         self.assertEqual(summary['missing_roles'],1)
+
+        job['traces'][0]['style']['max_gap_px'] = 2
+        write(self.root/'curve.json', job)
+        curve_run(self.root/'curve.json', self.root/'disconnected')
+        review = read(self.root/'disconnected/review_job.json')
+        self.assertEqual([row['anchor'] for row in review['items']],
+                         [[x, 40] for x in spec['sample_x']])
+        self.assertTrue(all(row['roles']['value'] == [] for row in review['items']))
+        self.assertEqual({row['complex_evidence']['trace_failed_at_x']
+                          for row in review['items']}, {18})
 
     def test_shared_range_requires_two_observed_pen_bounds(self):
         def trace(name, bounds, interpolation=False):

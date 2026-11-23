@@ -180,6 +180,83 @@ def guided_stems(mask, spec):
     return candidates
 
 
+def short_bar_candidates(gray, box, x, zero, plot_box):
+    """Find short bilateral runs outside a visible zero line."""
+    _, top, _, bottom = roi(box, gray.shape)
+    left, _, right, _ = roi(plot_box, gray.shape)
+    center, baseline = int(round(x)), int(round(zero))
+    dark = gray < 150
+    horizontal = dark[:, left:right+1].mean(axis=1) >= .85
+    if not horizontal[baseline]:
+        return []
+    result = []
+    for direction, limit in ((-1, top), (1, bottom)):
+        boundary = baseline
+        while boundary != limit and horizontal[boundary+direction]:
+            boundary += direction
+        if abs(boundary-baseline) > 3:
+            continue
+        hits = []
+        for distance in range(1, 7):
+            y = boundary+direction*distance
+            if not top <= y <= bottom or horizontal[y]:
+                break
+            if dark[y, center-3:center].sum() < 2 or dark[y, center+1:center+4].sum() < 2:
+                break
+            hits.append(y)
+        if 0 < len(hits) < 6 and hits[-1] not in (top, bottom):
+            result.append({'xy': [x, float(hits[-1])], 'zero_line_edge_y': boundary,
+                           'bilateral_support_rows': hits})
+    return result
+
+
+def bitmap_edge_candidates(gray, box, x, zero, plot_box):
+    """Rank cap-like horizontal transitions with bilateral body support."""
+    left, top, right, bottom = roi(box, gray.shape)
+    plot_left, _, plot_right, _ = roi(plot_box, gray.shape)
+    center = int(round(x))
+    if not left <= center-3 < center+3 <= right:
+        raise ValueError('edge candidates require three source pixels on each side of x')
+    profile = np.maximum(
+        np.median(gray[:, center-3:center-1], axis=1),
+        np.median(gray[:, center+2:center+4], axis=1),
+    )
+    grid = (gray[:, plot_left:plot_right+1] < 155).mean(axis=1) > .37
+    baseline = int(round(zero))
+    candidates = []
+    for direction, limit in ((-1, baseline-top), (1, bottom-baseline)):
+        for distance in range(2, limit-4):
+            y = baseline + direction*distance
+            if grid[y] or profile[y] > 145:
+                continue
+            inside = y-direction*np.arange(1, min(8, distance))
+            outside = y+direction*np.arange(2, 6)
+            inside, outside = inside[~grid[inside]], outside[~grid[outside]]
+            if not len(inside) or len(outside) < 2:
+                continue
+            inner, outer = np.median(profile[inside]), np.median(profile[outside])
+            if outer < 175 or inner > outer-8:
+                continue
+            traversed = np.arange(min(baseline, y)+1, max(baseline, y))
+            traversed = traversed[~grid[traversed]]
+            missing = np.mean(profile[traversed] > 220) if len(traversed) else 0
+            score = float(outer-profile[y]+.45*(outer-inner)-120*missing)
+            candidates.append((score, y))
+    if not candidates:
+        return []
+    candidates.sort(reverse=True)
+    best_score, best_y = candidates[0]
+    if best_score < 90:
+        return []
+    selected = [(best_score, best_y)]
+    for score, y in candidates[1:]:
+        if score <= best_score-12:
+            break
+        if all(abs(y-previous_y) > 2 for _, previous_y in selected):
+            selected.append((score, y))
+    return [{'xy': [x, float(y)], 'score': score} for score, y in selected]
+
+
 def analyze_bar(mask,spec,zero,body_mask=None):
     box=spec['roi'];x=spec['x'];geo=bar_geometry(mask if body_mask is None else body_mask,box,x,zero,
         spec.get('min_body_width',4),spec.get('max_body_gap',2),spec.get('range_expected',True))
@@ -361,7 +438,7 @@ def run(path,out):
     job,review,images,overlays,out=inputs(path,out)
     if not any(job.get(key) for key in ('bars', 'capped_ranges', 'boxplots')):
         raise ValueError('explicit bars, capped_ranges or boxplots required')
-    records=[];mask_cache={};body_cache={};layout_cache={};layouts={}
+    records=[];mask_cache={};body_cache={};layout_cache={};layouts={};gray_cache={}
     bar_lookup={b['id']:b for b in job.get('bars',[])}
     for layout in job.get('bar_groups',[]):
         members=[ident for group in layout['groups'] for ident in group]
@@ -419,6 +496,26 @@ def run(path,out):
                 roles,flags,geo=analyze_boxplot(mask,spec,*role_masks)
             elif kind=='bar':
                 roles,flags,geo=analyze_bar(mask,spec,zero,body_mask)
+                if 'edge_candidate_plot_box' in spec:
+                    source = panel['source']
+                    if source not in gray_cache:
+                        gray_cache[source] = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+                    edges = bitmap_edge_candidates(
+                        gray_cache[source], spec['roi'], spec['x'], zero, spec['edge_candidate_plot_box'])
+                    geo['bitmap_edge_candidates'] = edges
+                    for edge in edges:
+                        point = edge['xy']
+                        if not any(abs(point[1]-tip[1]) <= 1 for tip in roles['bar_tip']):
+                            roles['bar_tip'].append(point)
+                            flags.append('bitmap_edge_candidate_requires_review')
+                            geo['role_y_bounds_px'].pop('bar_tip', None)
+                    if not roles['bar_tip']:
+                        short = short_bar_candidates(
+                            gray_cache[source], spec['roi'], spec['x'], zero, spec['edge_candidate_plot_box'])
+                        geo['short_bar_candidates'] = short
+                        if short:
+                            roles['bar_tip'].extend(candidate['xy'] for candidate in short)
+                            flags.append('short_bar_candidate_requires_review')
             else:
                 roles,flags,geo=analyze_capped(mask,spec,zero)
             if kind=='bar' and 'body_baseline' in panel:
@@ -434,6 +531,9 @@ def run(path,out):
                         or any(role not in roles for role in selected)):
                     raise ValueError('review_roles must be distinct supported object roles')
                 roles = {role: roles[role] for role in selected}
+                if kind == 'bar' and selected == ['bar_tip']:
+                    flags = [flag for flag in flags
+                             if flag != 'range_stem_not_identified' and not flag.startswith('uncapped_')]
             review['items'].append(item(spec['id'],spec['panel'],spec['identity'],spec['roi'],roles,flags,geo))
             records.append({'id':spec['id'],'kind':kind,**geo})
     return finish(review,overlays,out,records,'bar_stem_cap_geometry')

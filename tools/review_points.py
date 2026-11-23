@@ -931,12 +931,16 @@ def inspect_points(result, folder, revision, refs=None, regions=None, image_cach
             y_positions = [p[1]]
         box=[max(int(bounds[0]),math.floor(p[0]-28)),max(int(bounds[1]),math.floor(p[1]-22)),
              min(int(bounds[2]),math.ceil(p[0]+28)),min(int(bounds[3]),math.ceil(p[1]+22))]
-        box[1] = max(int(bounds[1]),math.floor(min(y_positions)-22))
-        box[3] = min(int(bounds[3]),math.ceil(max(y_positions)+22))
+        failed_at = record.get('complex_evidence', {}).get('trace_failed_at_x')
+        padding_y = 80 if failed_at is not None and not options else 22
+        box[1] = max(int(bounds[1]),math.floor(min(y_positions)-padding_y))
+        box[3] = min(int(bounds[3]),math.ceil(max(y_positions)+padding_y))
         pixel=record['roles'][role]['pixel'] if record['id'] in records else None
         visible = [(i,q) for i,q in enumerate(options) if inside(q,box) and q != pixel]
         card = {**copy.deepcopy(record),'id':f'{record["id"]}::{role}','roi':box,
                 'anchor':p,'roles':{role:[pixel] if pixel else []},'role_labels':{}}
+        if failed_at is not None:
+            card['identity']['trace_failed_at_x'] = failed_at
         for i,q in visible:
             key=f'candidate{i}'
             card['roles'][key]=[q]
