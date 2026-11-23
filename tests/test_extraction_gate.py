@@ -13,11 +13,17 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 from extraction_gate import cell_bindings, check_cards, check_configured_coverage, check_delivery, check_job, compare_current_cells, coverage_report, expand_figure_previews, inspect_workbook, validate_scope
 from review_points import axis_fit
-from extraction_gate import bound_readings, coarse_source_rounding, matching_readings, prefer_printed, reading_indexes
+from extraction_gate import bound_readings, coarse_source_rounding, matching_readings, prefer_printed, prepared_precision, reading_indexes
 from run_task import Runner, changed_previews, sha, write
 
 
 class ExtractionGateTests(unittest.TestCase):
+    def test_measured_precision_caps_default_but_preserves_unmeasured_precision(self):
+        table = {'decimals': 2}
+        reading = {'value': 0.49497, 'measurement': {'display_decimals': 1}}
+        self.assertEqual(prepared_precision(table, reading, 'Fig5!E7')['decimals'], 1)
+        self.assertEqual(prepared_precision(table, {'value': 0.83}, 'Fig5!F7')['decimals'], 2)
+
     def test_source_rounding_uses_coarsest_supported_value(self):
         self.assertEqual(coarse_source_rounding(2943.38,[2930,2959])['output_value'],2940)
         self.assertEqual(coarse_source_rounding(2943.38,[2941,2959]),{})
