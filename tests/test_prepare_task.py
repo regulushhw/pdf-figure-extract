@@ -112,6 +112,7 @@ class PrepareTests(unittest.TestCase):
             page.draw_line((20, 250), (150, 250))  # unclassified flat mark
             page.insert_text((35, 65), '23%')
             page.insert_text((300, 65), '99%')
+            page.insert_text((12, 80), '123%')
             path = self.root / 'mixed.pdf'
             doc.save(path)
         prepare(path, self.out)

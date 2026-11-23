@@ -636,7 +636,10 @@ def route_panel(root, page_number, bounds):
         else:
             geometry = 'no_geometry_found'
         printed_percent_labels = []
-        for x0, y0, x1, y1, text, *_ in page.get_text('words', clip=panel, sort=True):
+        # Clipping during extraction can turn a cut-off "123%" into "23%".
+        for x0, y0, x1, y1, text, *_ in page.get_text('words', sort=True):
+            if not panel.contains(fitz.Rect(x0, y0, x1, y1)):
+                continue
             token = printed_token(text)
             if token.endswith('%') and PRINTED_NUMBER.fullmatch(token):
                 printed_percent_labels.append({'text': text, 'bbox_pt': [x0, y0, x1, y1]})
