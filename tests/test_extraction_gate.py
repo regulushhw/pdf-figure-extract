@@ -200,6 +200,26 @@ class ExtractionGateTests(unittest.TestCase):
             [None, 70, 90], ['observed', 1, 3], ['simulated', 4, 6]
         ], 'rows or columns differ from frozen scope')
 
+    def test_evidenced_gap_column_counts_as_a_retained_axis_position(self):
+        path = self.root / 'first-column-gap.xlsx'
+        table = {'sheet': 'Sheet', 'range': 'B2:C3',
+                 'columns': [70, 71], 'rows': ['observed', 'simulated']}
+        missing = {f'Sheet!B{row}': {'kind': 'source_uncovered'} for row in (2, 3)}
+        book = Workbook()
+        sheet = book.active
+        sheet.append([None, 70, 71])
+        sheet.append(['observed', '—', 3462])
+        sheet.append(['simulated', '—', 3260])
+        book.save(path)
+        inspect_workbook(path, {'Fig6': table}, final=True, missing=missing)
+        with self.assertRaisesRegex(ValueError, 'unsupported missing value at Sheet!B2'):
+            inspect_workbook(path, {'Fig6': table}, final=True)
+        sheet['B1'] = None
+        book.save(path)
+        book.close()
+        with self.assertRaisesRegex(ValueError, 'rows or columns differ from frozen scope'):
+            inspect_workbook(path, {'Fig6': table}, final=True, missing=missing)
+
     def test_only_changed_saved_previews_require_visual_review(self):
         original = Image.new('RGBA', (6, 6), 'white')
         drafts = []
