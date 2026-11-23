@@ -823,8 +823,9 @@ def prepared_precision(table, reading, key):
     if decimals is not None and (type(decimals) is not int or not 0 <= decimals <= 15):
         raise ValueError(f'{key}: invalid frozen decimal precision')
     value = reading['value']
-    if table.get('precision') == 'source' and value is not None:
-        measurement = reading.get('measurement') or {}
+    measurement = reading.get('measurement') or {}
+    use_source = table.get('precision', 'source' if 'display_decimals' in measurement else None) == 'source'
+    if use_source and value is not None:
         limit = measurement.get('display_decimals')
         if type(limit) is not int or not 0 <= limit <= 15:
             raise ValueError(f'{key}: source-based precision requires a measured reading')
