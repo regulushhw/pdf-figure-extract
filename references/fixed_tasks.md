@@ -49,7 +49,7 @@ python tools/drag_points.py task.json copy-series --part panel_a --from "50 mg/L
 {"action":"inspect","part":"panel_a","points":[{"id":"curve-120","role":"value"}]}
 ```
 
-省points时默认挑最多6个异常点位，无异常时给稳定候选。返回局部原图/回叠图、稳定ID、当前坐标/值、revision和image_hashes，不必另读全量结果。可附regions查看目标区域：`[{"panel":"a","bounds":[100,50,160,110]}]`，单区域边长最多180源像素；一次最多12个局部视图。坐标始终为原图像素，局部图有源坐标刻度。
+省points时默认挑最多6个异常点位，无异常时给稳定候选。同一面板、系列和取图区的曲线疑点可共用一张局部图，合并区边长最多180源像素，每个点保留独立编号和备选。返回局部原图/回叠图、稳定ID、当前坐标/值、revision和image_hashes，不必另读全量结果。可附regions查看目标区域：`[{"panel":"a","bounds":[100,50,160,110]}]`，单区域边长最多180源像素；一次最多12个局部视图。坐标始终为原图像素，局部图有源坐标刻度。
 
 点位属于同一候选重叠段且可以放进一张局部图时，共用一张原图和叠图，并保留每个点的编号和可编辑范围。叠图用 `c0`、`c1` 等标识备选，组合视图在前面加点号；`source_candidates` 保留完整备选像素。核对后可提交 `{"op":"choose_candidate","id":"curve-120","role":"value","candidate_index":1}` 选中当前局部图里展示的 `c1`，其余编辑规则不变。声明了取样列的缺口按源图 X 坐标打开。
 
