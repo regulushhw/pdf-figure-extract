@@ -64,6 +64,30 @@ class ObjectReviewTests(unittest.TestCase):
             self.assertLess(image.width,900);self.assertLess(image.height,1600)
         self.assertEqual(self.result['items'][0]['roles']['upper']['status'],'needs_review')
 
+    def test_curve_segment_keeps_independent_candidate_indices(self):
+        template = self.result['items'][0]
+        self.result['items'] = []
+        for x in (20, 30, 40):
+            record = copy.deepcopy(template)
+            record.update(id=f'curve-{x}', roi=[10, 10, 60, 130], anchor=[x, 50],
+                          flags=['nearby_track_requires_identity_review'],
+                          complex_evidence={'x': x},
+                          source_candidates={'value': [[x, 50], [x, 60]]})
+            state = copy.deepcopy(template['roles']['upper'])
+            record['roles'] = {'value': state}
+            self.result['items'].append(record)
+        refs = [{'id': row['id'], 'role': 'value'} for row in self.result['items']]
+        view = self.view('points', refs)
+        self.assertEqual([row['label'] for row in view['views']], [1, 2, 3])
+        self.assertEqual(len({tuple(row['bounds']) for row in view['views']}), 1)
+        updated = self.edit(view, [
+            {'op': 'choose_candidate', 'id': 'curve-20', 'role': 'value', 'candidate_index': 1},
+            {'op': 'choose_candidate', 'id': 'curve-40', 'role': 'value', 'candidate_index': 0},
+        ])
+        self.assertEqual(updated['items'][0]['roles']['value']['pixel'], [20, 60])
+        self.assertEqual(updated['items'][2]['roles']['value']['pixel'], [40, 50])
+        self.assertEqual(updated['items'][1], self.result['items'][1])
+
     def test_focus_keeps_full_roi_escape_and_rejects_unseen_edits(self):
         focus=self.view('objects');full=self.view('objects_full')
         fv=read_json(focus['view'])['views'][0];wv=read_json(full['view'])['views'][0]

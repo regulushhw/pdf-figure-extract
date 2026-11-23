@@ -956,10 +956,18 @@ def inspect_points(result, folder, revision, refs=None, regions=None, image_cach
         views.append(view)
         spans = record.get('complex_evidence', {}).get('shared_ink_spans', [])
         if spans and role == 'value':
-            sections.setdefault((record['panel'], *spans[0]['x_bounds']), []).append(len(cards)-1)
+            left, right = spans[0]['x_bounds']
+            sections.setdefault((record['panel'], f'shared ink {left}-{right}'), []).append(len(cards)-1)
+        elif (role == 'value' and record.get('flags') and 'x' in record.get('complex_evidence', {})
+              and record['roles'][role]['status'] in ('needs_review', 'automatic_candidate')):
+            series = record.get('identity', {}).get('series')
+            if series:
+                key = (record['panel'], f'curve {series}', tuple(record['roi']))
+                sections.setdefault(key, []).append(len(cards)-1)
     if view_mode == 'points' and sections:
         replacements, combined = {}, set()
-        for (panel, left, right), indexes in sections.items():
+        for section, indexes in sections.items():
+            panel, label = section[:2]
             if len(indexes) < 2:
                 continue
             boxes = [views[i]['bounds'] for i in indexes]
@@ -967,7 +975,7 @@ def inspect_points(result, folder, revision, refs=None, regions=None, image_cach
                    max(b[2] for b in boxes), max(b[3] for b in boxes)]
             if box[2]-box[0]>180 or box[3]-box[1]>180:
                 continue
-            group = {'id':f'{panel}: shared ink {left}-{right}', 'panel':panel,
+            group = {'id':f'{panel}: {label}', 'panel':panel,
                      'roi':box, 'anchor':cards[indexes[0]]['anchor'],
                      'identity':{'points':len(indexes)}, 'roles':{}, 'role_labels':{}}
             for n, i in enumerate(indexes, 1):
