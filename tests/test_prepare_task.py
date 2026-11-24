@@ -170,6 +170,14 @@ class PrepareTests(unittest.TestCase):
                          {'B6':'- 2.5%','C6':'1,250'})
         self.assertEqual([(c['cell'],c['text']) for c in result['unresolved']],
                          [('B7','2 to 3'),('C7','')])
+        mapped = printed_grid(self.out, 1, [20,20,200,100], 'B6', [25,55,85], [25,105,185],
+                              destination_rows=[6, 9])
+        self.assertEqual(mapped['printed'], result['printed'])
+        self.assertEqual([cell['cell'] for cell in mapped['unresolved']], ['B9', 'C9'])
+        for invalid in ([6], [6, 6], [5, 9]):
+            with self.assertRaisesRegex(ValueError, 'destination rows'):
+                printed_grid(self.out, 1, [20,20,200,100], 'B6', [25,55,85], [25,105,185],
+                             destination_rows=invalid)
 
     def test_compact_vector_to_real_runner_and_cache(self):
         self.prepare(); self.vector()
