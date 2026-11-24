@@ -56,3 +56,5 @@ python tools/prepare_task.py printed-grid <package> --page 8 --bounds 196 148 76
 ```
 
 有且仅有一张可识别的有线框表时，程序使用它的单元格边界。无框线表可同时传入 `--row-edges` 和 `--column-edges`，坐标单位为 PDF 点。每个候选保留印刷记号、页码与范围。空位、表头文字及多个数字组成的复杂内容进入 `unresolved`。核对源表行列身份和目标数据范围后，将 `printed` 放入相应的 `transcribe` 表配置。关卡会逐格重读 PDF 并与工作簿数值对账。
+
+目标工作表含分组标题或空行时，用 `--destination-rows` 按源数据行顺序列出目标行，例如 `--cell B6 --destination-rows 6 7 9`。原 PDF 的区域与行边界应只选目标数据行，源表含独立分区时可分区调用。核对每段首末数据行的标签。印刷数字带括号时，按原表表头或表注确认括号含义，再保留原字样与解释。

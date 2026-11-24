@@ -651,7 +651,8 @@ def route_panel(root, page_number, bounds):
                 'axis_aligned_paths': axis_aligned}
 
 
-def printed_grid(root, page_number, bounds, destination, row_edges=None, column_edges=None):
+def printed_grid(root, page_number, bounds, destination, row_edges=None, column_edges=None,
+                 destination_rows=None):
     """Propose gate-ready bindings for a selected printed table region."""
     _, package = check_package(root)
     if not page_number or not bounds or not destination:
@@ -679,8 +680,15 @@ def printed_grid(root, page_number, bounds, destination, row_edges=None, column_
             if len(tables) != 1:
                 raise ValueError('select one ruled table, or provide explicit row and column edges')
             rows = [row.cells for row in tables[0].rows]
+        if destination_rows is None:
+            destination_rows = range(first_row, first_row + len(rows))
+        elif (len(destination_rows) != len(rows) or not destination_rows
+              or destination_rows[0] != first_row
+              or any(type(row) is not int or not 1 <= row <= 1048576 for row in destination_rows)
+              or any(a >= b for a, b in zip(destination_rows, destination_rows[1:]))):
+            raise ValueError('destination rows must match source row count, start at --cell, and strictly increase')
         bindings, unresolved = {}, []
-        for y, row in enumerate(rows, first_row):
+        for y, row in zip(destination_rows, rows):
             for x, box in enumerate(row, first_col):
                 address = f'{get_column_letter(x)}{y}'
                 text = page.get_text('text', clip=box).strip() if box else ''
@@ -702,6 +710,7 @@ def main():
     ap.add_argument('--cell')
     ap.add_argument('--row-edges', type=float, nargs='+')
     ap.add_argument('--column-edges', type=float, nargs='+')
+    ap.add_argument('--destination-rows', type=int, nargs='+')
     ap.add_argument('--method')
     ap.add_argument('--image')
     ap.add_argument('--bounds', type=float, nargs=4)
@@ -715,7 +724,7 @@ def main():
             if not args.package: raise ValueError('package directory required')
             if args.input == 'printed-grid':
                 reply = printed_grid(args.package, args.page, args.bounds, args.cell,
-                                     args.row_edges, args.column_edges)
+                                     args.row_edges, args.column_edges, args.destination_rows)
             elif args.input == 'route':
                 reply = route_panel(args.package, args.page, args.bounds)
             elif args.input == 'configure':
