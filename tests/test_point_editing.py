@@ -13,6 +13,14 @@ from review_points import axis_fit, interpolation_basis, pixel_measurement
 
 
 class PointTests(unittest.TestCase):
+    def test_axis_accepts_exact_limit_despite_float_roundoff(self):
+        axis = {'coordinate': 'y', 'unit': 'mm', 'ticks': [[1401, 0], [36, 70]],
+                'check_ticks': [[622, 40]], 'max_residual_px': 1}
+        self.assertAlmostEqual(axis_fit(axis)['max_check_residual_px'], 1)
+        axis['check_ticks'] = [[622.0001, 40]]
+        with self.assertRaisesRegex(ValueError, 'independent tick residual'):
+            axis_fit(axis)
+
     def test_bitmap_precision_uses_pixel_edges_and_rejects_stale_bounds(self):
         calibration = axis_fit({'coordinate': 'y', 'unit': '%',
                                 'ticks': [[0, 0], [100, 10]], 'check_ticks': [[51, 5]],

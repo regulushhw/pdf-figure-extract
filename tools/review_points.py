@@ -85,13 +85,14 @@ def axis_fit(axis):
         raise ValueError("constant calibration")
     residual = float(np.max(np.abs((transformed-intercept)/slope-ticks[:, 0])))
     tolerance = float(axis.get("max_residual_px", 1.0))
-    if not math.isfinite(tolerance) or tolerance < 0 or residual > tolerance:
+    if (not math.isfinite(tolerance) or tolerance < 0
+            or residual > tolerance and not math.isclose(residual, tolerance, rel_tol=0, abs_tol=1e-9)):
         raise ValueError(f"tick calibration residual {residual:.4g}px exceeds {tolerance}px")
     check_residual = 0.0
     for check in axis.get("check_ticks", []):
         pos, value = pair(check)
         error = abs((axis_forward(value, kind)-intercept)/slope-float(pos))
-        if error > tolerance:
+        if error > tolerance and not math.isclose(error, tolerance, rel_tol=0, abs_tol=1e-9):
             raise ValueError(f"independent tick residual {error:.4g}px exceeds {tolerance}px")
         check_residual = max(check_residual, error)
     return {"slope": float(slope), "intercept": float(intercept),
