@@ -428,7 +428,13 @@ def analyze_boxplot(mask, spec, median_mask=None, whisker_mask=None):
         roles[role] = [[x, top+(a+b)/2] for a,b in connected]
         if len(connected) == 1:
             a,b = connected[0]
-            evidence['role_y_bounds_px'][role] = [top+a, top+b]
+            interval = slice(b+1, anchor) if b < anchor else slice(anchor+1, a)
+            # A cap abutting the box edge has no visible independent stem.
+            # Keep the coordinate for review, but withhold measured bounds.
+            if np.any(center[interval] & (horizontal[interval] < 5)):
+                evidence['role_y_bounds_px'][role] = [top+a, top+b]
+            else:
+                flags.append(f'{role}_touches_box_review')
         else:
             flags.append(f'{role}_ambiguous')
     return roles, flags, evidence

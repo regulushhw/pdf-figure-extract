@@ -80,6 +80,20 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(roles['lower_whisker'], [])
         self.assertEqual(flags, ['lower_whisker_ambiguous'])
 
+    def test_boxplot_cap_touching_box_requires_review(self):
+        mask = np.zeros((60, 55), dtype=bool)
+        mask[[20, 30, 40], 15:36] = True
+        mask[20:41, [15, 35]] = True
+        mask[19, 21:30] = True
+        mask[40:49, 25] = True
+        mask[48, 21:30] = True
+        roles, flags, evidence = analyze_boxplot(
+            mask, {'roi': [11, 5, 39, 55], 'x': 25, 'box_half_width': 10})
+        self.assertEqual(roles['upper_whisker'], [[25, 19]])
+        self.assertIn('upper_whisker_touches_box_review', flags)
+        self.assertNotIn('upper_whisker', evidence['role_y_bounds_px'])
+        self.assertEqual(evidence['role_y_bounds_px']['lower_whisker'], [48, 48])
+
     def test_boxplot_separates_colored_roles(self):
         outline = np.zeros((75, 55), dtype=bool)
         outline[[20, 41], 15:36] = True
