@@ -540,6 +540,11 @@ def run(path,out):
                 if kind == 'bar' and selected == ['bar_tip']:
                     flags = [flag for flag in flags
                              if flag != 'range_stem_not_identified' and not flag.startswith('uncapped_')]
+                if kind == 'boxplot':
+                    excluded_whiskers = tuple(f'{role}_' for role in
+                                              ('upper_whisker', 'lower_whisker') if role not in selected)
+                    geo['unselected_role_flags'] = [flag for flag in flags if flag.startswith(excluded_whiskers)]
+                    flags = [flag for flag in flags if not flag.startswith(excluded_whiskers)]
             review['items'].append(item(spec['id'],spec['panel'],spec['identity'],spec['roi'],roles,flags,geo))
             records.append({'id':spec['id'],'kind':kind,**geo})
     return finish(review,overlays,out,records,'bar_stem_cap_geometry')

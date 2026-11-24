@@ -93,6 +93,22 @@ class GeometryTests(unittest.TestCase):
         self.assertIn('upper_whisker_touches_box_review', flags)
         self.assertNotIn('upper_whisker', evidence['role_y_bounds_px'])
         self.assertEqual(evidence['role_y_bounds_px']['lower_whisker'], [48, 48])
+        image = self.root/'boxplot.png'
+        Image.fromarray(np.where(mask, 0, 255).astype('uint8')).save(image)
+        job = self.root/'boxplot.json'
+        write(job, {
+            'sources': {'s': {'image': str(image)}},
+            'panels': {'p': {'source': 's', 'bounds': [11, 5, 39, 55],
+                             'axis': {'coordinate': 'y', 'ticks': [[5, 50], [55, 0]], 'unit': '%'}}},
+            'boxplots': [{**self.spec(), 'roi': [11, 5, 39, 55], 'x': 25,
+                          'box_half_width': 10, 'review_roles': ['median']}],
+        })
+        bar_run(job, self.root/'box_review')
+        item = read(self.root/'box_review/review_job.json')['items'][0]
+        self.assertEqual(item['roles'], {'median': [[25, 30]]})
+        self.assertEqual(item['flags'], [])
+        self.assertEqual(item['complex_evidence']['unselected_role_flags'],
+                         ['upper_whisker_touches_box_review'])
 
     def test_boxplot_separates_colored_roles(self):
         outline = np.zeros((75, 55), dtype=bool)
