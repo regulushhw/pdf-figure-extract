@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import numpy as np
 from PIL import Image,ImageDraw
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
@@ -12,6 +13,35 @@ from review_points import write_json,read_json,prepare
 
 
 class AutoTraceTests(unittest.TestCase):
+    def test_connected_methods_disagreeing_keep_both_candidates(self):
+        rgb, spec = self.fixture('clean')
+        # Two real horizontal strokes allow each method to return visible ink.
+        rgb[65, 10:91] = 145
+        alternative = {'status': 'proposed', 'path': [[x, 65] for x in range(10, 91)]}
+        with patch('auto_trace_bitmap.graph_path', return_value=alternative):
+            result = route_trace(rgb, spec)
+        self.assertEqual(result['selected_method'], 'column_path')
+        sample = result['samples'][2]
+        self.assertEqual(sample['candidates'], [[50, 60.0], [50, 65.0]])
+        self.assertIn('method_disagreement', sample['flags'])
+        self.assertEqual(sample['method_candidates']['ink_graph'], [[50, 65.0]])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            Image.fromarray(rgb).save(root/'figure.png')
+            write_json(root/'job.json', {
+                'sources': {'s': {'image': 'figure.png'}},
+                'panels': {'a': {'source': 's', 'bounds': [1,1,108,108],
+                                 'axis': {'coordinate': 'y', 'ticks': [[10,100],[90,0]], 'unit': '%'}}},
+                'traces': [spec],
+            })
+            with patch('auto_trace_bitmap.graph_path', return_value=alternative):
+                output = run(root/'job.json', root/'output')
+            item = read_json(output['job'])['items'][2]
+            self.assertEqual(item['roles']['value'], sample['candidates'])
+            self.assertIn('method_disagreement', item['flags'])
+            with Image.open(root/'output/route_overlay_0.png') as overlay:
+                self.assertEqual(overlay.getpixel((50, 63)), (0, 0, 255))
+
     def fixture(self,kind):
         im=Image.new('RGB',(110,110),'white');d=ImageDraw.Draw(im)
         if kind=='spike':d.line([(10,60),(40,60),(50,15),(60,60),(90,60)],fill=(145,145,145),width=1)

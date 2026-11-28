@@ -153,6 +153,9 @@ def run(job_path,out_dir):
         if result['selected_method']:
             for x,y in result['methods'][result['selected_method']]['path']:draw.point((round(x),round(y)),fill='red')
         for s in result['samples']:
+            if 'method_disagreement' in s['flags']:
+                for x, y in s['candidates']:
+                    draw.ellipse((x-2, y-2, x+2, y+2), outline='blue', width=1)
             review['items'].append({'id':f"{t['id']}-{s['x']}",'panel':t['panel'],
                 'identity':{**t['identity'],'source_pixel_x':s['x']},'roi':t['roi'],
                 'anchor':s['candidates'][0] if s['candidates'] else [s['x'],(t['roi'][1]+t['roi'][3])/2],
